@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Lumenor HR v5 – Advisory Group</title>
+<!-- v5: failed-tab+back-button+instant-apply+mobile+AI -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#080808;color:#eee}
+input,textarea,select,button{font-family:inherit}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:#111}
+::-webkit-scrollbar-thumb{background:#2a2a2a;border-radius:3px}
+
+/* ── Mobile Responsive ── */
+@media(max-width:768px){
+  .admin-layout{flex-direction:column!important;}
+  .sidebar-desktop{display:none!important;}
+  .main-content{padding:14px!important;}
+  .mobile-nav{display:flex!important;}
+  .mobile-header{display:flex!important;}
+  .grid-cards{grid-template-columns:1fr!important;}
+  .metric-grid{grid-template-columns:repeat(2,1fr)!important;}
+  .modal-inner{padding:14px!important;border-radius:14px!important;margin:8px!important;}
+  .action-btns{flex-direction:column!important;}
+  .action-btns button{width:100%!important;text-align:center!important;justify-content:center!important;}
+  .home-title{font-size:26px!important;letter-spacing:-.3px!important;}
+  .home-subtitle{font-size:14px!important;}
+  .apply-btn{font-size:14px!important;padding:12px 32px!important;}
+  .tab-content{padding-bottom:20px!important;}
+  h2{font-size:16px!important;}
+  .modal-inner h2{font-size:15px!important;}
+}
+@media(min-width:769px){
+  .mobile-nav{display:none!important;}
+  .mobile-header{display:none!important;}
+}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect,useMemo,useRef,useCallback} = React;
+
+const BRAND="#64c56f",BRAND_DARK="#4aa655";
+console.log("🚀 Lumenor HR - build: 20260423-FINAL - sync via:",
+  typeof SYNC_URL !== "undefined" ? SYNC_URL : "checking...");
+const LOGO="https://assets.cdn.filesafe.space/j1czdqPGvv6kIR6mA14k/media/6974ca4ea87beb3747869ecd.png";
+
+/* ─────────────────────────────────────────
+   FIREBASE CONFIG
+   Paste your Firebase config here after
+   creating a project at firebase.google.com
+───────────────────────────────────────── */
+const FIREBASE_PROJECT = "lumenor-recruitment";
+const FIREBASE_API_KEY = "AIzaSyCMTznsBdEq7akujt400VWO-jxQueue2vXQ";
+const POLL_MS = 3000;
+
+const FB_DOC = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT}/databases/(default)/documents/hrdata/main`;
+
+function fbToData(doc){
+  try{return doc?.fields?.json?.stringValue?JSON.parse(doc.fields.json.stringValue):null;}
+  catch(e){return null;}
+}
+
+async function cloudRead(){
+  try{
+    const r=await fetch(`${FB_DOC}?key=${FIREBASE_API_KEY}`);
+    if(r.status===404)return null;
+    if(!r.ok){console.error("Firebase read",r.status);return null;}
+    const doc=await r.json();
+    const data=fbToData(doc);
+    if(data)console.log("☁️ Firebase OK, applicants:",data?.applicants?.length);
+    return data;
+  }catch(e){console.error("cloudRead",e);return null;}
+}
+
+async function cloudWrite(data){
+  try{
+    const r=await fetch(
+      `${FB_DOC}?key=${FIREBASE_API_KEY}&updateMask.fieldPaths=json`,
+      {method:"PATCH",headers:{"Content-Type":"application/json"},
+       body:JSON.stringify({fields:{json:{stringValue:JSON.stringify(data)}}})}
+    );
+    if(!r.ok){console.error("Firebase write",r.status,await r.text());return false;}
+    console.log("☁️ Firebase write OK");
+    return true;
+  }catch(e){console.error("cloudWrite",e);return false;}
+}
+
+/* ─────────────────────────────────────────
+   FALLBACK: localStorage (used while cloud
+   is loading or if not yet configured)
+───────────────────────────────────────── */
+const LS_KEY="lumenor_hr_v6";
+function lsRead(){try{const r=localStorage.getItem(LS_KEY);return r?JSON.parse(r):null;}catch{return null;}}
+function lsWrite(d){try{localStorage.setItem(LS_KEY,JSON.stringify(d));}catch{}}
+
+const uid=()=>Math.random().toString(36).slice(2,9);
+const today=()=>new Date().toISOString().slice(0,10);
+const fmt=d=>new Date(d).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});
+const initials=(n="")=>n.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase()||"?";
+const abg=(n="")=>{const c=[BRAND,"#4A90E2","#E2844A","#9B59B6","#E91E8C","#00BCD4","#FF5722"];let h=0;for(let x of n)h=(h*31+x.charCodeAt(0))&0xffffffff;return c[Math.abs(h)%c.length];};
+
+const SC={passed:BRAND,failed:"#e74c3c","initial-interview":"#00BCD4","final-interview":"#9B59B6",hired:"#4A90E2","waiting-list":"#f39c12",departed:"#888"};
+const SL={passed:"Passed",failed:"Failed","initial-interview":"Initial Interview","final-interview":"Final Interview",hired:"Hired","waiting-list":"Waiting List",departed:"Departed"};
+
+async function callAI(prompt,mode="text"){
+  // AI calls go to Netlify function (absolute URL — works from any host)
+  const AI_ENDPOINT="https://lumenoradvisorygroup-recruitment.netlify.app/api/ai";
+  try{
+    const r=await fetch(AI_ENDPOINT,{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({prompt,mode})
+    });
+    const d=await r.json();
+    if(!r.ok){console.error("AI error:",d.error);return "";}
+    return d.result||"";
+  }catch(e){console.error("callAI",e);return "";}
+}
+function exportCSV(rows,fn){
+  if(!rows.length)return;
+  const k=Object.keys(rows[0]);
+  const csv=[k.join(","),...rows.map(r=>k.map(x=>JSON.stringify(r[x]??"")).join(","))].join("\n");
+  const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));a.download=fn+".csv";a.click();
+}
+
+const LEVELS=[
+  {id:"entry",label:"Entry Level",sub:"1–2 years experience"},
+  {id:"mid",label:"Mid Level",sub:"3–5 years experience"},
+  {id:"senior",label:"Senior Level",sub:"5–10+ years experience"},
+];
+const DEFAULT_POSITIONS=[
+  {id:"va",label:"Virtual Assistant",questions:{
+    entry:["What tools are you familiar with (e.g. Gmail, Trello)?","Describe a simple admin task you've handled.","Are you comfortable working in a remote setup?"],
+    mid:["What project management tools have you used (Notion, Asana, ClickUp)?","Describe a complex task you managed independently.","How do you handle multiple priorities?"],
+    senior:["Describe a team or process you've managed as a VA lead.","How do you onboard new VAs or delegate tasks?","What systems have you built or improved?"],
+  }},
+  {id:"acc",label:"Accountant",questions:{
+    entry:["Are you familiar with basic bookkeeping?","Do you have experience with any accounting software?","Have you prepared basic financial reports?"],
+    mid:["What accounting systems have you worked with (QuickBooks, Xero)?","Describe your experience with reconciliation.","Have you handled payroll processing?"],
+    senior:["Have you managed a full accounting team?","Describe your experience with audits and compliance.","How do you handle complex tax scenarios?"],
+  }},
+  {id:"mkt",label:"Marketing Staff",questions:{
+    entry:["Are you familiar with social media platforms?","Have you created any content (graphics, posts)?","Do you know basic Canva or similar tools?"],
+    mid:["What marketing campaigns have you run?","Describe your SEO or paid ads experience.","What tools do you use for analytics?"],
+    senior:["How have you scaled a brand's online presence?","Describe a full marketing strategy you developed.","How do you manage a marketing team and budget?"],
+  }},
+];
+const DEFAULT_ORG={
+  founder:{name:"Bert Lim",title:"Founder & CEO"},
+  partner:{name:"Pino Cruz",title:"Partner"},
+  departments:[
+    {id:"d1",name:"Operations",color:BRAND,teams:[{id:"t1",name:"VA Team",lead:"Maria Santos"}]},
+    {id:"d2",name:"Finance & Marketing",color:"#4A90E2",teams:[{id:"t2",name:"Accounts",lead:"John Rivera"},{id:"t3",name:"Marketing",lead:"Ana Gomez"}]},
+  ],
+  overallSupport:[{id:"s1",name:"Tech Support PH",role:"IT Support"}],
+};
+const DEFAULT_STATE={
+  applicants:[
+    {id:"sa1",name:"Liza Reyes",email:"liza@email.com",phone:"09171234567",address:"Quezon City, PH",position:"Virtual Assistant",positionId:"va",level:"mid",levelLabel:"Mid Level",resume:"liza_reyes_resume.pdf",resumeB64:"",answers:{0:"3 years with Slack, Notion, Trello",1:"Managed calendar, emails, project tracking for 5 clients",2:"I prioritize by urgency and deadline"},score:88,status:"passed",date:"2025-04-10",summary:"",history:["passed"]},
+    {id:"sa2",name:"Carlos Bautista",email:"carlos@email.com",phone:"09291234567",address:"Bogota, Colombia",position:"Accountant",positionId:"acc",level:"senior",levelLabel:"Senior Level",resume:"carlos_cv.pdf",resumeB64:"",answers:{0:"Yes, managed a 3-person accounting team",1:"Handled 3 external audits",2:"Complex multi-jurisdiction tax"},score:92,status:"passed",date:"2025-04-09",summary:"",history:["passed"]},
+    {id:"sa3",name:"Amy Johnson",email:"amy@email.com",phone:"+13105550001",address:"New York, US",position:"Marketing Staff",positionId:"mkt",level:"entry",levelLabel:"Entry Level",resume:"amy_johnson.pdf",resumeB64:"",answers:{0:"Instagram and TikTok",1:"Canva",2:"Beginner"},score:62,status:"failed",date:"2025-04-08",summary:"",history:["passed","failed"]},
+    {id:"sa4",name:"Rosa Garcia",email:"rosa@email.com",phone:"+573001234567",address:"Medellin, Colombia",position:"Virtual Assistant",positionId:"va",level:"entry",levelLabel:"Entry Level",resume:"rosa_cv.pdf",resumeB64:"",answers:{0:"Gmail, Google Docs, Trello",1:"Scheduling and email management",2:"Yes, dedicated home office"},score:78,status:"final-interview",date:"2025-04-07",summary:"",history:["passed","initial-interview","final-interview"]},
+  ],
+  employees:[
+    {id:"e1",name:"Maria Santos",position:"VA Lead",managerId:"m1",salary:1800,location:"Philippines",notes:"",contract:""},
+    {id:"e2",name:"John Rivera",position:"Accountant",managerId:"m2",salary:3200,location:"US",notes:"",contract:""},
+  ],
+  managers:[
+    {id:"m1",name:"Bert Lim",role:"Operations Manager",location:"Philippines"},
+    {id:"m2",name:"Pino Cruz",role:"Finance & Marketing Manager",location:"US"},
+  ],
+  org:DEFAULT_ORG,
+  positions:DEFAULT_POSITIONS,
+};
+
+/* ─────────────────────────────────────────
+   UI PRIMITIVES
+───────────────────────────────────────── */
+function Avatar({name,size=40}){
+  return <div style={{width:size,height:size,borderRadius:"50%",background:abg(name),display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontWeight:700,fontSize:size*.36,flexShrink:0}}>{initials(name)}</div>;
+}
+function Badge({label,color=BRAND}){
+  return <span style={{background:color+"22",color,fontSize:11,fontWeight:700,padding:"2px 9px",borderRadius:20,whiteSpace:"nowrap"}}>{label}</span>;
+}
+function Card({children,onClick,glow,style={}}){
+  const[h,sh]=useState(false);
+  return <div onClick={onClick} onMouseEnter={()=>sh(true)} onMouseLeave={()=>sh(false)}
+    style={{background:"#111",border:`1px solid ${(glow||(h&&onClick))?BRAND+"55":"#222"}`,borderRadius:14,padding:"16px 18px",cursor:onClick?"pointer":"default",boxShadow:(glow||(h&&onClick))?`0 0 18px ${BRAND}22`:"none",transition:"all .2s",...style}}>
+    {children}
+  </div>;
+}
+function Btn({children,onClick,variant="primary",size="md",disabled=false,style={}}){
+  const[h,sh]=useState(false);
+  const base={border:"none",borderRadius:8,cursor:disabled?"not-allowed":"pointer",fontWeight:700,fontSize:size==="sm"?11:13,transition:"all .15s",opacity:disabled?.5:1};
+  const p=size==="sm"?"4px 10px":"8px 16px";
+  const v={
+    primary:{background:h?BRAND_DARK:BRAND,color:"#000",padding:p,boxShadow:h?`0 0 14px ${BRAND}66`:"none"},
+    danger:{background:h?"#c0392b":"#e74c3c",color:"#fff",padding:p},
+    outline:{background:"transparent",color:BRAND,border:`1.5px solid ${BRAND}`,padding:size==="sm"?"3px 9px":"7px 16px",boxShadow:h?`0 0 10px ${BRAND}33`:"none"},
+    ghost:{background:h?"#222":"#1a1a1a",color:"#aaa",padding:p,border:"1px solid #333"},
+    warn:{background:h?"#d68910":"#f39c12",color:"#000",padding:p},
+    blue:{background:h?"#3a7bd5":"#4A90E2",color:"#fff",padding:p},
+    purple:{background:h?"#7d3c98":"#9B59B6",color:"#fff",padding:p},
+  };
+  return <button onClick={onClick} disabled={disabled} onMouseEnter={()=>sh(true)} onMouseLeave={()=>sh(false)} style={{...base,...v[variant],...style}}>{children}</button>;
+}
+function Inp({label,value,onChange,type="text",placeholder="",required=false}){
+  return <div style={{marginBottom:13}}>
+    {label&&<label style={{display:"block",fontSize:11,fontWeight:700,color:"#888",marginBottom:4,textTransform:"uppercase",letterSpacing:.5}}>{label}{required&&<span style={{color:"#e74c3c"}}> *</span>}</label>}
+    <input type={type} value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder}
+      style={{width:"100%",padding:"9px 12px",border:"1.5px solid #333",borderRadius:8,fontSize:13,outline:"none",boxSizing:"border-box",background:"#0d0d0d",color:"#eee"}}
+      onFocus={e=>e.target.style.borderColor=BRAND} onBlur={e=>e.target.style.borderColor="#333"}/>
+  </div>;
+}
+function Txa({label,value,onChange,rows=3,placeholder=""}){
+  return <div style={{marginBottom:13}}>
+    {label&&<label style={{display:"block",fontSize:11,fontWeight:700,color:"#888",marginBottom:4,textTransform:"uppercase",letterSpacing:.5}}>{label}</label>}
+    <textarea value={value} onChange={e=>onChange(e.target.value)} rows={rows} placeholder={placeholder}
+      style={{width:"100%",padding:"9px 12px",border:"1.5px solid #333",borderRadius:8,fontSize:13,outline:"none",resize:"vertical",boxSizing:"border-box",background:"#0d0d0d",color:"#eee"}}
+      onFocus={e=>e.target.style.borderColor=BRAND} onBlur={e=>e.target.style.borderColor="#333"}/>
+  </div>;
+}
+function Modal({open,onClose,title,children,width=560}){
+  if(!open)return null;
+  return <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.8)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:16}} onClick={onClose}>
+    <div onClick={e=>e.stopPropagation()} className="modal-inner" style={{background:"#111",border:"1px solid #2a2a2a",borderRadius:18,padding:24,width:"100%",maxWidth:width,maxHeight:"90vh",overflowY:"auto"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:18}}>
+        <h2 style={{margin:0,fontSize:17,fontWeight:800,color:"#eee"}}>{title}</h2>
+        <button onClick={onClose} style={{background:"#1a1a1a",border:"1px solid #333",borderRadius:6,fontSize:18,cursor:"pointer",color:"#888",width:30,height:30,display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
+      </div>
+      {children}
+    </div>
+  </div>;
+}
+function MetricCard({label,value,color="#eee"}){
+  return <div style={{background:"#0d0d0d",border:"1px solid #222",borderRadius:12,padding:"14px 18px",textAlign:"center",minWidth:0}}>
+    <div style={{fontSize:10,color:"#555",marginBottom:5,fontWeight:700,textTransform:"uppercase",letterSpacing:.5}}>{label}</div>
+    <div style={{fontSize:24,fontWeight:800,color}}>{value}</div>
+  </div>;
+}
+function ST({c}){return <h2 style={{margin:"0 0 20px",color:"#eee",fontWeight:800,fontSize:20,letterSpacing:-.3}}>{c}</h2>;}
+function LocSelect({val,onChange}){
+  return <div style={{marginBottom:13}}>
+    <label style={{display:"block",fontSize:11,fontWeight:700,color:"#888",marginBottom:4,textTransform:"uppercase",letterSpacing:.5}}>Location</label>
+    <select value={val} onChange={e=>onChange(e.target.value)} style={{width:"100%",padding:"9px 12px",border:"1.5px solid #333",borderRadius:8,background:"#0d0d0d",color:"#eee",fontSize:13}}>
+      {["Philippines","US","Colombia","UK","Australia","Other"].map(l=><option key={l}>{l}</option>)}
+    </select>
+  </div>;
+}
+
+/* ─────────────────────────────────────────
+   APPLICANT PORTAL
+───────────────────────────────────────── */
+function ApplicantModule({positions,onApply,onBack}){
+  const[step,ss]=useState(0);const[selPos,ssp]=useState(null);const[selLvl,ssl]=useState(null);
+  const[form,sf]=useState({name:"",email:"",phone:"",address:""});const[answers,sa]=useState({});
+  const[resumeFile,srf]=useState(null);const[errors,se]=useState({});const[submitting,ssub]=useState(false);
+  const pos=positions.find(p=>p.id===selPos);const lvl=LEVELS.find(l=>l.id===selLvl);const qs=pos?.questions?.[selLvl]||[];
+  function readFile(f){return new Promise(res=>{const r=new FileReader();r.onload=()=>res(r.result);r.readAsDataURL(f);});}
+  function validate(){const e={};if(!form.name.trim())e.name="Required";if(!form.email.trim()||!/\S+@\S+\.\S+/.test(form.email))e.email="Valid email required";if(!form.phone.trim())e.phone="Required";if(!form.address.trim())e.address="Required";if(!resumeFile)e.resume="Resume required";qs.forEach((_,i)=>{if(!answers[i]?.trim())e[`q${i}`]="Required";});se(e);return !Object.keys(e).length;}
+  async function handleSubmit(){
+    if(!validate())return;
+    ssub(true);
+    const b64=resumeFile?await readFile(resumeFile):"";
+    // Build AI scoring prompt from actual answers
+    const posQuestions=pos.questions?.[selLvl]||[];
+    const answersText=posQuestions.map((q,i)=>`Q${i+1}: ${q}\nA${i+1}: ${answers[i]||"No answer"}`).join("\n");
+    const resumeHint=resumeFile?`Resume uploaded: ${resumeFile.name}`:"No resume uploaded";
+    // Dynamic position context — works for ANY job title, no hard-coding needed
+    // The AI will determine required skills based on the actual job title and level
+    const relevantSkills=[]; // AI determines these itself from job title
+
+    const scoringPrompt=`You are a Senior HR Analyst and Talent Acquisition Expert for LUMENOR ADVISORY GROUP — a professional firm specializing in Accounting, Forensic & Tax Strategies.
+
+Your task: Conduct a DEEP, PROFESSIONAL evaluation of this applicant. Be thorough, honest, and unbiased.
+
+═══════════════════════════════════════════════
+ABOUT LUMENOR ADVISORY GROUP
+═══════════════════════════════════════════════
+Lumenor is a professional services firm offering Accounting, Bookkeeping, Tax Planning, Forensic Accounting, and Financial Advisory services. We serve clients in the US, Philippines, and Colombia. We need professionals who are detail-oriented, trustworthy, and genuinely skilled — not people who just know buzzwords.
+
+═══════════════════════════════════════════════
+POSITION BEING EVALUATED
+═══════════════════════════════════════════════
+Job Title: ${pos.label}
+Required Experience Level: ${lvl.label} (${lvl.sub})
+Resume: ${resumeHint}
+
+Based on the job title "${pos.label}", you must independently determine:
+- What specific technical skills, certifications, tools, and knowledge are REQUIRED for this role
+- What ${lvl.label}-level performance looks like in this specific field
+- What red flags are common for this type of position
+
+═══════════════════════════════════════════════
+APPLICANT'S SCREENING ANSWERS
+═══════════════════════════════════════════════
+${answersText}
+
+═══════════════════════════════════════════════
+CONDUCT A 6-POINT DEEP ANALYSIS:
+═══════════════════════════════════════════════
+
+1. AUTHENTICITY & ORIGINALITY TEST
+   Determine if answers are GENUINE (from real experience) or FAKE (searched/AI-generated):
+   - GENUINE signs: specific company names, actual numbers, personal anecdotes, mistakes mentioned, tool version specifics, workflow details
+   - FAKE signs: textbook definitions, "accounting is the process of...", overly perfect grammar with no personality, generic phrases like "I have extensive experience in all areas of..."
+   - SEARCHED signs: starting answers with definitions, explaining what a tool is instead of how they use it, Wikipedia-style language
+   Score maximum 45/100 if answers appear searched or AI-generated.
+
+2. TECHNICAL COMPETENCY VERIFICATION
+   For "${pos.label}" at ${lvl.label} level:
+   - List the specific technical skills/tools/certifications you would expect this candidate to mention
+   - Did they demonstrate actual working knowledge or just surface awareness?
+   - Did they use correct industry terminology naturally (not forced)?
+   - Did they mention specific software, processes, regulations, or standards relevant to this role?
+   - For accounting/tax/forensic roles: Look for specific tax codes, accounting standards (GAAP/IFRS), software (QuickBooks, Drake, Lacerte, ProConnect), and regulatory knowledge
+
+3. EXPERIENCE LEVEL AUTHENTICITY
+   - Does the DEPTH of their answers truly match ${lvl.label} (${lvl.sub})?
+   - An entry-level person answering with senior-level specifics = suspicious (may be lying about experience)
+   - A senior-level candidate giving vague, shallow answers = incompetent or dishonest
+   - Do they describe responsibilities appropriate for their claimed level?
+
+4. RESUME CREDIBILITY
+   ${resumeHint==="No resume uploaded"
+     ?"NO RESUME UPLOADED — Automatic 20-point deduction. For a professional services firm like Lumenor, this shows lack of preparation and seriousness."
+     :"Resume uploaded. Based on the job title and their answers, assess whether a legitimate resume for this position would support their claims. Flag if answers suggest they may have embellished their resume."}
+
+5. PROFESSIONAL RED FLAG DETECTION
+   Actively look for:
+   🚩 JOB HOPPING — mentions of very short stints at multiple companies (under 1 year each)
+   🚩 FABRICATION — claims that seem too good for their stated level, or impossible within timeframes
+   🚩 EVASION — answering a different question than what was asked, vague non-answers
+   🚩 OVERCONFIDENCE — "I can do everything", "I am an expert in all areas" without specifics
+   🚩 COPY-PASTE — answers that read like they were copied from job descriptions or the internet
+   🚩 AI-GENERATED — unnaturally perfect structure, no personal voice, robotic phrasing
+   🚩 UNPROFESSIONALISM — poor grammar, casual language, emoji use in professional answers
+   🚩 DESPERATION — willing to work for any salary, any hours, any task without boundaries
+   🚩 INCONSISTENCY — contradicts themselves across different answers
+
+6. OVERALL FIT FOR LUMENOR
+   Given that Lumenor serves professional clients in accounting, tax, and financial advisory:
+   - Would this person represent Lumenor professionally to clients?
+   - Do they seem detail-oriented and trustworthy?
+   - Would their skills actually contribute value to a professional firm?
+
+═══════════════════════════════════════════════
+SCORING RUBRIC
+═══════════════════════════════════════════════
+- Authenticity & Originality: 30 points
+- Technical Competency: 30 points  
+- Experience Level Match: 20 points
+- Resume & Professionalism: 10 points
+- Communication Quality: 10 points
+
+FINAL SCORE MEANING:
+90-100: EXCEPTIONAL — Rare find. Hire immediately.
+80-89: STRONG PASS — Clearly qualified, proceed to interview.
+70-79: PASS — Solid candidate with minor gaps. Worth interviewing.
+60-69: BORDERLINE — Some merit but significant concerns. Careful consideration needed.
+40-59: FAIL — Vague, generic, or weak answers. Not ready for this role.
+0-39: STRONG FAIL — Red flags detected, dishonest, or clearly unqualified.
+
+IMPORTANT CALIBRATION:
+- If answers seem searched/AI-generated: MAX score is 45
+- If no resume uploaded: DEDUCT 20 points from final score
+- If experience level mismatch is clear: MAX score is 55
+- If multiple red flags detected: MAX score is 50
+- Reserve 80+ for candidates who genuinely impress you with specific, detailed, authentic expertise
+
+Reply with ONLY this exact JSON. No text before or after. No markdown:
+{"score":<0-100>,"summary":"<2-3 sentences on overall assessment — be specific about what you noticed>","strengths":"<Top 2-3 genuine strengths with direct quotes or references from their answers>","weaknesses":"<Top 2-3 specific gaps or concerns with evidence>","redFlags":"<Specific red flags detected with explanation, or empty string>","recommendation":"<STRONG PASS / PASS / BORDERLINE / FAIL / STRONG FAIL — followed by 1 specific reason>","technicalAssessment":"<What technical skills they demonstrated or lacked for ${pos.label} at ${lvl.label} level>"}`;
+
+    let score=70;
+    let summary="";
+    try{
+      const aiResp=await callAI(scoringPrompt,"score");
+      const cleaned=aiResp.replace(/```json|```/g,"").trim();
+      const parsed=JSON.parse(cleaned);
+      score=Math.min(100,Math.max(0,Math.round(parsed.score||70)));
+      const parts=[];
+      if(parsed.recommendation)parts.push("📋 "+parsed.recommendation);
+      if(parsed.summary)parts.push(parsed.summary);
+      if(parsed.technicalAssessment)parts.push("🔧 Technical: "+parsed.technicalAssessment);
+      if(parsed.strengths)parts.push("✅ Strengths: "+parsed.strengths);
+      if(parsed.weaknesses)parts.push("⚠️ Gaps: "+parsed.weaknesses);
+      if(parsed.redFlags)parts.push("🚩 Red Flags: "+parsed.redFlags);
+      summary=parts.join(" | ");
+    }catch(e){
+      console.error("AI scoring failed, using fallback",e);
+      // Fallback: score based on answer length/quality
+      const totalAnswerLength=Object.values(answers).join(" ").length;
+      score=resumeFile
+        ?Math.min(95,60+Math.floor(totalAnswerLength/20))
+        :Math.min(80,50+Math.floor(totalAnswerLength/20));
+    }
+    onApply({id:uid(),name:form.name,email:form.email,phone:form.phone,address:form.address,position:pos.label,positionId:pos.id,level:selLvl,levelLabel:lvl.label,resume:resumeFile?.name,resumeB64:b64,answers,score,status:score>=75?"passed":"failed",date:today(),summary,history:[score>=75?"passed":"failed"]});
+    ssub(false);
+    ss(4);
+  }
+  const bg="linear-gradient(135deg,#0a0a0a 0%,#0d150d 50%,#0a0a0a 100%)";
+  if(step===4)return(<div style={{minHeight:"100vh",background:bg,display:"flex",alignItems:"center",justifyContent:"center",padding:24,position:"relative"}}>
+{onBack&&<div onClick={onBack} style={{position:"fixed",top:16,left:16,zIndex:100,display:"flex",alignItems:"center",gap:6,cursor:"pointer",background:"rgba(13,13,13,0.9)",border:"1px solid #2a2a2a",borderRadius:20,padding:"6px 14px",color:"#888",fontSize:12,fontWeight:600,backdropFilter:"blur(8px)"}}><span style={{fontSize:14}}>←</span> Home</div>}
+<div style={{textAlign:"center",background:"#111",border:`1px solid ${BRAND}44`,borderRadius:24,padding:52,maxWidth:460,boxShadow:`0 0 60px ${BRAND}22`}}><div style={{width:80,height:80,borderRadius:"50%",background:BRAND,margin:"0 auto 24px",display:"flex",alignItems:"center",justifyContent:"center",boxShadow:`0 0 30px ${BRAND}88`}}><span style={{fontSize:38,color:"#000",fontWeight:800}}>✓</span></div><h2 style={{color:"#eee",marginBottom:12,fontSize:24}}>Application Submitted!</h2><p style={{color:"#777",lineHeight:1.8,marginBottom:28}}>Thank you! Please wait for our email regarding the status of your application.</p><Btn onClick={()=>{ss(0);sf({name:"",email:"",phone:"",address:""});sa({});srf(null);ssp(null);ssl(null);}} variant="outline">Apply for Another Position</Btn></div></div>);
+  if(step===0)return(<div style={{minHeight:"100vh",background:bg,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:24,position:"relative",overflow:"hidden"}}><div style={{position:"absolute",width:600,height:600,borderRadius:"50%",background:`radial-gradient(circle,${BRAND}18 0%,transparent 70%)`,top:"50%",left:"50%",transform:"translate(-50%,-50%)",pointerEvents:"none"}}/><div style={{textAlign:"center",maxWidth:520,position:"relative",padding:"0 8px"}}><img src={LOGO} alt="Lumenor" style={{height:80,marginBottom:28,filter:"drop-shadow(0 0 20px rgba(100,197,111,0.4))"}}/><h1 style={{fontSize:38,fontWeight:900,color:"#eee",marginBottom:10,letterSpacing:-.5}}>Lumenor Advisory Group</h1><p style={{color:BRAND,fontSize:18,fontWeight:600,marginBottom:40}}>Your Direct Path to a Better Career. Apply Now.</p><Btn onClick={()=>ss(1)} style={{fontSize:17,padding:"15px 44px",borderRadius:12,boxShadow:`0 0 24px ${BRAND}66`}}>Apply Now →</Btn></div></div>);
+  if(step===1)return(<div style={{minHeight:"100vh",background:bg,padding:32}}><div style={{maxWidth:620,margin:"0 auto"}}><div style={{display:"flex",alignItems:"center",gap:14,marginBottom:36}}><img src={LOGO} alt="Lumenor" style={{height:36}}/><h2 style={{margin:0,color:"#eee",fontWeight:800}}>Choose a Position</h2></div><div style={{display:"flex",flexDirection:"column",gap:12}}>{positions.map(p=><Card key={p.id} onClick={()=>{ssp(p.id);ss(2);}} style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{fontWeight:700,color:"#eee",fontSize:16}}>{p.label}</div><div style={{color:"#666",fontSize:13,marginTop:3}}>3 experience levels available</div></div><span style={{color:BRAND,fontSize:22}}>→</span></Card>)}</div></div></div>);
+  if(step===2)return(<div style={{minHeight:"100vh",background:bg,padding:32}}><div style={{maxWidth:620,margin:"0 auto"}}><button onClick={()=>ss(1)} style={{background:"none",border:"none",color:BRAND,cursor:"pointer",fontWeight:700,marginBottom:24,fontSize:14}}>← Back</button><div style={{background:`linear-gradient(135deg,${BRAND}22,transparent)`,border:`1px solid ${BRAND}44`,borderRadius:16,padding:"20px 24px",marginBottom:28}}><div style={{color:BRAND,fontSize:12,fontWeight:700,letterSpacing:1}}>APPLYING FOR</div><div style={{color:"#eee",fontSize:22,fontWeight:800}}>{pos?.label}</div></div><h3 style={{color:"#eee",marginBottom:16}}>Select Your Experience Level</h3><div style={{display:"flex",flexDirection:"column",gap:12}}>{LEVELS.map(l=><Card key={l.id} onClick={()=>{ssl(l.id);ss(3);}} style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{fontWeight:700,color:"#eee"}}>{l.label}</div><div style={{color:"#666",fontSize:13}}>{l.sub}</div></div><span style={{color:BRAND}}>→</span></Card>)}</div></div></div>);
+  return(<div style={{minHeight:"100vh",background:bg,padding:24}}><div style={{maxWidth:660,margin:"0 auto"}}><button onClick={()=>ss(2)} style={{background:"none",border:"none",color:BRAND,cursor:"pointer",fontWeight:700,marginBottom:16,fontSize:14}}>← Back</button><div style={{background:`linear-gradient(135deg,${BRAND}22,transparent)`,border:`1px solid ${BRAND}44`,borderRadius:16,padding:"18px 22px",marginBottom:24}}><div style={{color:BRAND,fontSize:11,fontWeight:700,letterSpacing:1}}>APPLYING FOR</div><div style={{color:"#eee",fontSize:20,fontWeight:800}}>{pos?.label} <span style={{color:"#666",fontSize:14,fontWeight:400}}>· {lvl?.label}</span></div></div><Card style={{marginBottom:18}}><h3 style={{color:"#eee",margin:"0 0 14px",fontSize:14}}>A. Personal Information</h3><Inp label="Full Name" value={form.name} onChange={v=>sf(f=>({...f,name:v}))} required/>{errors.name&&<div style={{color:"#e74c3c",fontSize:11,marginTop:-9,marginBottom:9}}>{errors.name}</div>}<Inp label="Email Address" type="email" value={form.email} onChange={v=>sf(f=>({...f,email:v}))} required/>{errors.email&&<div style={{color:"#e74c3c",fontSize:11,marginTop:-9,marginBottom:9}}>{errors.email}</div>}<Inp label="Phone Number" value={form.phone} onChange={v=>sf(f=>({...f,phone:v}))} required/>{errors.phone&&<div style={{color:"#e74c3c",fontSize:11,marginTop:-9,marginBottom:9}}>{errors.phone}</div>}<Inp label="Address" value={form.address} onChange={v=>sf(f=>({...f,address:v}))} required/>{errors.address&&<div style={{color:"#e74c3c",fontSize:11,marginTop:-9,marginBottom:9}}>{errors.address}</div>}</Card><Card style={{marginBottom:18}}><h3 style={{color:"#eee",margin:"0 0 14px",fontSize:14}}>B. Qualification Questions</h3>{qs.map((q,i)=><div key={i}><Txa label={`${i+1}. ${q}`} value={answers[i]||""} onChange={v=>sa(a=>({...a,[i]:v}))} placeholder="Your answer..."/>{errors[`q${i}`]&&<div style={{color:"#e74c3c",fontSize:11,marginTop:-9,marginBottom:9}}>{errors[`q${i}`]}</div>}</div>)}</Card><Card style={{marginBottom:24}}><h3 style={{color:"#eee",margin:"0 0 12px",fontSize:14}}>C. Resume Upload</h3><label style={{display:"block",border:`2px dashed ${resumeFile?BRAND:"#333"}`,borderRadius:10,padding:28,textAlign:"center",cursor:"pointer",background:resumeFile?`${BRAND}11`:"#0d0d0d",transition:"all .2s"}}><input type="file" accept=".pdf,.doc,.docx" style={{display:"none"}} onChange={e=>{if(e.target.files[0])srf(e.target.files[0]);}}/><div style={{fontSize:28,marginBottom:8}}>📄</div>{resumeFile?<div style={{color:BRAND,fontWeight:700}}>{resumeFile.name}</div>:<><div style={{fontWeight:600,color:"#777"}}>Click to upload resume</div><div style={{color:"#444",fontSize:12,marginTop:4}}>PDF, DOC, DOCX</div></>}</label>{errors.resume&&<div style={{color:"#e74c3c",fontSize:11,marginTop:7}}>{errors.resume}</div>}</Card><Btn onClick={handleSubmit} disabled={submitting} style={{width:"100%",fontSize:15,padding:13,borderRadius:10}}>{submitting?"Submitting...":"Submit Application"}</Btn></div></div>);
+}
+
+/* ── Admin Login ── */
+function AdminLogin({onLogin,onBack}){
+  const[u,su]=useState("");const[p,sp]=useState("");const[err,se]=useState("");
+  return(<div style={{minHeight:"100vh",background:"linear-gradient(135deg,#080808,#0d150d)",display:"flex",alignItems:"center",justifyContent:"center",padding:24}}><div style={{background:"#111",border:`1px solid ${BRAND}33`,borderRadius:20,padding:40,width:"100%",maxWidth:400,boxShadow:`0 0 40px ${BRAND}18`}}><div style={{textAlign:"center",marginBottom:28}}><img src={LOGO} alt="Lumenor" style={{height:56,marginBottom:18}}/><h2 style={{margin:0,color:"#eee",fontWeight:800}}>Admin Login</h2><p style={{color:"#555",fontSize:13,marginTop:6}}>Lumenor HR Management System</p></div><Inp label="Username" value={u} onChange={su} placeholder="Enter username"/><Inp label="Password" type="password" value={p} onChange={sp} placeholder="••••••••"/>{err&&<div style={{color:"#e74c3c",fontSize:13,marginBottom:14,textAlign:"center"}}>{err}</div>}<Btn onClick={()=>{if(u==="lumenor_admin"&&p==="Bert&Pino_admin@")onLogin();else se("Invalid credentials.");}} style={{width:"100%",padding:12,fontSize:15}}>Login</Btn><button onClick={onBack} style={{width:"100%",marginTop:12,background:"none",border:"none",color:"#555",cursor:"pointer",fontSize:13}}>← Back to Home</button></div></div>);
+}
+
+/* ── Email Modal ── */
+function EmailModal({open,onClose,applicant,onSent}){
+  const[ef,sef]=useState({to:"",from:"hr@lumenoradvisory.com",subject:"",body:""});const[st,ss]=useState("");
+  React.useEffect(()=>{if(applicant)sef({to:applicant.email||"",from:"hr@lumenoradvisory.com",subject:`Update from Lumenor Advisory Group – ${applicant.position}`,body:`Dear ${applicant.name},\n\n\n\nBest regards,\nLumenor Advisory Group HR Team`});},[applicant]);
+  async function send(){ss("sending");await new Promise(r=>setTimeout(r,1000));ss("sent");if(onSent)onSent();setTimeout(()=>{onClose();ss("");},1500);}
+  return(<Modal open={open} onClose={onClose} title="Send Email" width={540}><Inp label="To" value={ef.to} onChange={v=>sef(f=>({...f,to:v}))}/><Inp label="From" value={ef.from} onChange={v=>sef(f=>({...f,from:v}))}/><Inp label="Subject" value={ef.subject} onChange={v=>sef(f=>({...f,subject:v}))}/><Txa label="Message" value={ef.body} onChange={v=>sef(f=>({...f,body:v}))} rows={8}/><div style={{display:"flex",gap:8,marginTop:14}}><Btn onClick={send} disabled={st==="sending"||st==="sent"}>{st==="sending"?"Sending...":st==="sent"?"✓ Sent!":"Send Email"}</Btn><Btn onClick={onClose} variant="ghost">Cancel</Btn></div></Modal>);
+}
+
+/* ── Depart Modal ── */
+function DepartModal({open,onClose,applicant,onConfirm}){
+  const[reason,sr]=useState("");const[notes,sn]=useState("");
+  const reasons=["Resigned","Absent Without Official Leave (AWOL)","Terminated","Other Reason"];
+  return(<Modal open={open} onClose={onClose} title="No Longer with Lumenor" width={480}><div style={{marginBottom:14}}><div style={{fontSize:11,fontWeight:700,color:"#888",marginBottom:9,textTransform:"uppercase"}}>Reason for Departure</div>{reasons.map(r=><label key={r} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 12px",background:reason===r?`${BRAND}11`:"#0d0d0d",border:`1px solid ${reason===r?BRAND:"#333"}`,borderRadius:8,cursor:"pointer",marginBottom:6}}><input type="radio" name="dep" value={r} checked={reason===r} onChange={()=>sr(r)} style={{accentColor:BRAND}}/><span style={{color:"#ccc",fontSize:13}}>{r}</span></label>)}</div><Txa label="Additional Notes (required)" value={notes} onChange={sn} rows={4} placeholder="Describe the circumstances in detail..."/><div style={{display:"flex",gap:8,marginTop:14}}><Btn onClick={()=>{if(!reason||!notes.trim())return;onConfirm(reason,notes);}} variant="danger" disabled={!reason||!notes.trim()}>Confirm Departure</Btn><Btn onClick={onClose} variant="ghost">Cancel</Btn></div></Modal>);
+}
+
+/* ── Full Applicant Detail ── */
+function ApplicantFullDetail({app,positions,onUpdate,extraBtns}){
+  const[summary,setSummary]=useState(app.summary||"");const[aiLoading,setAL]=useState(false);
+  const[salary,setSalary]=useState(String(app.salary||""));const[contractLink,setCL]=useState(app.contractLink||"");const[contractFile,setCF]=useState(null);
+  const qs=(positions.find(p=>p.id===app.positionId)||{questions:{}}).questions[app.level]||[];
+  async function genAI(){setAL(true);const s=await callAI(`HR analyst: write a concise 3-sentence professional summary.\nName: ${app.name}\nPosition: ${app.position}\nLevel: ${app.levelLabel}\nScore: ${app.score}%\nAnswers: ${JSON.stringify(app.answers)}\nWrite directly, no preamble.`);const result=s||"Unable to generate summary.";setSummary(result);if(onUpdate)onUpdate({summary:result});setAL(false);}
+  function saveHR(){if(onUpdate)onUpdate({salary:Number(salary),contractLink,contractFileName:contractFile?contractFile.name:(app.contractFileName||"")});}
+  return(<div><div style={{display:"flex",gap:12,alignItems:"flex-start",marginBottom:16}}><Avatar name={app.name} size={52}/><div style={{flex:1}}><div style={{display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:6}}><h3 style={{margin:0,fontSize:18,color:"#eee"}}>{app.name}</h3><Badge label={SL[app.status]||app.status} color={SC[app.status]||"#888"}/></div><div style={{color:"#777",fontSize:13,marginTop:3}}>{app.position} · {app.levelLabel}</div><div style={{color:"#555",fontSize:12}}>{app.email} · {app.phone}</div><div style={{color:"#555",fontSize:12}}>{app.address}</div><div style={{marginTop:6,display:"flex",gap:5,flexWrap:"wrap"}}><Badge label={`Score: ${app.score}%`} color={app.score>=75?BRAND:"#e74c3c"}/><Badge label={`Applied: ${fmt(app.date)}`} color="#444"/>{(app.history||[]).map((h,i)=><Badge key={i} label={SL[h]||h} color={SC[h]||"#555"}/>)}</div></div></div>{app.resumeB64&&<div style={{marginBottom:13}}><div style={{fontSize:11,fontWeight:700,color:"#666",marginBottom:6,textTransform:"uppercase"}}>Resume</div>{app.resumeB64.startsWith("data:application/pdf")?<iframe src={app.resumeB64} style={{width:"100%",height:220,border:"1px solid #333",borderRadius:7}} title="Resume"/>:<a href={app.resumeB64} download={app.resume} style={{display:"flex",alignItems:"center",gap:8,padding:"9px 12px",background:"#0d0d0d",border:"1px solid #333",borderRadius:7,color:BRAND,textDecoration:"none",fontWeight:600,fontSize:13}}>📄 {app.resume}<span style={{marginLeft:"auto",color:"#666",fontSize:11}}>Download</span></a>}</div>}{!app.resumeB64&&app.resume&&<div style={{padding:"8px 12px",background:"#0d0d0d",border:"1px solid #333",borderRadius:7,marginBottom:13,color:"#666",fontSize:12}}>📎 {app.resume}</div>}{qs.length>0&&<div style={{marginBottom:13}}><div style={{fontSize:11,fontWeight:700,color:"#666",marginBottom:8,textTransform:"uppercase"}}>Qualification Answers</div>{qs.map((q,i)=><div key={i} style={{marginBottom:6,padding:"8px 11px",background:"#0d0d0d",border:"1px solid #1e1e1e",borderRadius:7}}><div style={{fontSize:11,color:"#555",marginBottom:3}}>{q}</div><div style={{fontSize:13,color:"#ccc"}}>{app.answers&&app.answers[i]||"—"}</div></div>)}</div>}<div style={{marginBottom:13}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:7}}><div style={{fontSize:11,fontWeight:700,color:"#666",textTransform:"uppercase"}}>AI Summary</div>{onUpdate&&<Btn onClick={genAI} variant="outline" size="sm" disabled={aiLoading}>{aiLoading?"Analyzing...":"✦ Generate"}</Btn>}</div>{summary?<div style={{padding:"10px 12px",background:`${BRAND}11`,border:`1px solid ${BRAND}33`,borderRadius:7,fontSize:13,color:"#ccc",lineHeight:1.7}}>{summary}</div>:<div style={{color:"#444",fontSize:12,fontStyle:"italic"}}>Click Generate to create AI summary.</div>}</div>{app.status!=="departed"&&onUpdate&&<div style={{borderTop:"1px solid #1e1e1e",paddingTop:13,marginBottom:13}}><div style={{fontSize:11,fontWeight:700,color:"#666",marginBottom:11,textTransform:"uppercase"}}>HR Details</div><Inp label="Monthly Salary (USD)" type="number" value={salary} onChange={setSalary}/><Inp label="Contract Link (optional)" value={contractLink} onChange={setCL} placeholder="https://drive.google.com/..."/><div style={{marginBottom:13}}><label style={{display:"block",fontSize:11,fontWeight:700,color:"#888",marginBottom:4,textTransform:"uppercase",letterSpacing:.5}}>Contract File (optional)</label><label style={{display:"flex",alignItems:"center",gap:8,padding:"9px 12px",border:"1px dashed #333",borderRadius:7,cursor:"pointer",background:"#0d0d0d"}}><input type="file" accept=".pdf,.doc,.docx" style={{display:"none"}} onChange={e=>e.target.files[0]&&setCF(e.target.files[0])}/><span style={{color:"#555",fontSize:12}}>{contractFile?contractFile.name:(app.contractFileName||"Click to upload contract file")}</span></label>{(contractLink||app.contractLink)&&<a href={contractLink||app.contractLink} target="_blank" rel="noreferrer" style={{display:"block",marginTop:5,color:BRAND,fontSize:11}}>🔗 View Contract</a>}</div><Btn onClick={saveHR} style={{width:"100%"}}>💾 Save HR Details</Btn></div>}{app.status==="departed"&&app.departReason&&<div style={{padding:"12px 14px",background:"#1a0808",border:"1px solid #e74c3c44",borderRadius:10,marginBottom:13}}><div style={{fontSize:11,fontWeight:700,color:"#e74c3c",marginBottom:6,textTransform:"uppercase"}}>Departure Details</div><div style={{fontSize:13,color:"#ccc",marginBottom:3}}><b>Reason:</b> {app.departReason}</div><div style={{fontSize:13,color:"#ccc",marginBottom:3}}><b>Date:</b> {fmt(app.departDate||app.date)}</div>{app.departNotes&&<div style={{fontSize:13,color:"#aaa",marginTop:6,lineHeight:1.7}}>{app.departNotes}</div>}</div>}{extraBtns&&<div style={{borderTop:"1px solid #1e1e1e",paddingTop:12,display:"flex",gap:7,flexWrap:"wrap"}}>{extraBtns}</div>}</div>);
+}
+
+/* ── Dashboard ── */
+function DashboardTab({applicants}){
+  const c={total:applicants.length,passed:applicants.filter(a=>a.status==="passed").length,initial:applicants.filter(a=>a.status==="initial-interview").length,final:applicants.filter(a=>a.status==="final-interview").length,hired:applicants.filter(a=>a.status==="hired").length,waiting:applicants.filter(a=>a.status==="waiting-list").length,failed:applicants.filter(a=>a.status==="failed").length,departed:applicants.filter(a=>a.status==="departed").length};
+  const bars=[{l:"Passed",v:c.passed,c:BRAND},{l:"Initial",v:c.initial,c:"#00BCD4"},{l:"Final",v:c.final,c:"#9B59B6"},{l:"Hired",v:c.hired,c:"#4A90E2"},{l:"Waiting",v:c.waiting,c:"#f39c12"},{l:"Failed",v:c.failed,c:"#e74c3c"}];
+  const mx=Math.max(...bars.map(b=>b.v),1);
+  const recent=[...applicants].sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,5);
+  return(<div><ST c="Dashboard"/><div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(100px,1fr))",gap:9,marginBottom:20}} className="metric-grid"><MetricCard label="Total" value={c.total}/><MetricCard label="Passed" value={c.passed} color={BRAND}/><MetricCard label="Initial" value={c.initial} color="#00BCD4"/><MetricCard label="Final" value={c.final} color="#9B59B6"/><MetricCard label="Hired" value={c.hired} color="#4A90E2"/><MetricCard label="Waiting" value={c.waiting} color="#f39c12"/><MetricCard label="Failed" value={c.failed} color="#e74c3c"/><MetricCard label="Departed" value={c.departed} color="#888"/></div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}><Card><div style={{fontWeight:700,color:"#aaa",fontSize:13,marginBottom:16}}>Pipeline Overview</div><div style={{display:"flex",alignItems:"flex-end",gap:8,height:110}}>{bars.map(b=><div key={b.l} style={{display:"flex",flexDirection:"column",alignItems:"center",flex:1}}><div style={{fontSize:12,fontWeight:800,color:b.c,marginBottom:4}}>{b.v}</div><div style={{width:"100%",height:Math.max((b.v/mx)*90,3),background:b.c,borderRadius:"3px 3px 0 0",boxShadow:`0 0 8px ${b.c}55`,minHeight:3}}/><div style={{fontSize:9,color:"#555",marginTop:4,textAlign:"center"}}>{b.l}</div></div>)}</div></Card><Card><div style={{fontWeight:700,color:"#aaa",fontSize:13,marginBottom:12}}>Recent Applications</div>{recent.map(a=><div key={a.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:"1px solid #1a1a1a"}}><div><div style={{fontWeight:600,color:"#eee",fontSize:12}}>{a.name}</div><div style={{color:"#555",fontSize:11}}>{a.position}</div></div><Badge label={SL[a.status]||a.status} color={SC[a.status]||"#888"}/></div>)}{recent.length===0&&<div style={{color:"#444",fontSize:13}}>No applications yet.</div>}</Card></div></div>);
+}
+
+/* ── Generic Applicant List Tab ── */
+function AppListTab({applicants,onUpdate,positions,filterStatus,label,cardActions}){
+  const[search,ss]=useState("");const[pf,spf]=useState("");const[sel,ssel]=useState(null);const[emailApp,sea]=useState(null);
+  const list=applicants.filter(a=>{const sm=Array.isArray(filterStatus)?filterStatus.includes(a.status):a.status===filterStatus;return sm&&(!pf||a.positionId===pf)&&(!search||a.name.toLowerCase().includes(search.toLowerCase())||a.email.toLowerCase().includes(search.toLowerCase()));});
+  const groups={};list.forEach(a=>{if(!groups[a.position])groups[a.position]=[];groups[a.position].push(a);});
+  function move(app,newStatus,extra){onUpdate(app.id,{status:newStatus,history:[...(app.history||[]),newStatus],...(extra||{})});ssel(null);}
+  return(<div><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:18,flexWrap:"wrap",gap:10}}><ST c={`${label} (${list.length})`}/><div style={{display:"flex",gap:8,flexWrap:"wrap"}}><input value={search} onChange={e=>ss(e.target.value)} placeholder="Search..." style={{padding:"7px 11px",border:"1px solid #2a2a2a",borderRadius:7,fontSize:12,outline:"none",background:"#111",color:"#eee",width:160}}/><select value={pf} onChange={e=>spf(e.target.value)} style={{padding:"7px 11px",border:"1px solid #2a2a2a",borderRadius:7,fontSize:12,outline:"none",background:"#111",color:"#eee"}}><option value="">All Positions</option>{positions.map(p=><option key={p.id} value={p.id}>{p.label}</option>)}</select><Btn onClick={()=>exportCSV(list.map(a=>({Name:a.name,Email:a.email,Position:a.position,Level:a.levelLabel,Score:a.score,Status:a.status,Date:a.date})),label.replace(/\s/g,"_"))} variant="ghost" size="sm">↓ Export</Btn></div></div>{list.length===0&&<div style={{color:"#444",textAlign:"center",padding:48,fontSize:14}}>No applicants found.</div>}{Object.entries(groups).map(([pos,items])=><div key={pos} style={{marginBottom:22}}><div style={{fontSize:11,fontWeight:700,color:"#555",marginBottom:10,letterSpacing:.5,textTransform:"uppercase",borderBottom:"1px solid #1a1a1a",paddingBottom:5}}>{pos} ({items.length})</div><div className="grid-cards" style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(255px,1fr))",gap:10}}>{items.map(a=><Card key={a.id}><div onClick={()=>ssel(a)} style={{cursor:"pointer",marginBottom:10}}><div style={{display:"flex",gap:10,alignItems:"flex-start"}}><Avatar name={a.name} size={38}/><div style={{flex:1,minWidth:0}}><div style={{fontWeight:700,color:"#eee",fontSize:13}}>{a.name}</div><div style={{color:"#666",fontSize:11,marginTop:2}}>{a.levelLabel} · {fmt(a.date)}</div><div style={{fontSize:12,fontWeight:700,color:a.score>=75?BRAND:"#e74c3c",marginTop:3}}>Score: {a.score}%</div>{(a.history||[]).length>1&&<div style={{marginTop:5,display:"flex",gap:3,flexWrap:"wrap"}}>{(a.history||[]).map((h,i)=><Badge key={i} label={SL[h]||h} color={SC[h]||"#555"}/>)}</div>}</div></div></div><div className="action-btns" style={{display:"flex",gap:5,flexWrap:"wrap"}}>{cardActions&&cardActions(a,move,sea)}</div></Card>)}</div></div>)}<Modal open={!!sel} onClose={()=>ssel(null)} title="Applicant Profile" width={620}>{sel&&<div><div style={{display:"flex",gap:12,alignItems:"flex-start",marginBottom:14}}><Avatar name={sel.name} size={50}/><div style={{flex:1}}><div style={{display:"flex",justifyContent:"space-between",flexWrap:"wrap",gap:6}}><h3 style={{margin:0,fontSize:18,color:"#eee"}}>{sel.name}</h3><Badge label={SL[sel.status]||sel.status} color={SC[sel.status]||"#888"}/></div><div style={{color:"#777",fontSize:13,marginTop:3}}>{sel.position} · {sel.levelLabel}</div><div style={{color:"#555",fontSize:12}}>{sel.email} · {sel.phone}</div><div style={{color:"#555",fontSize:12}}>{sel.address}</div><div style={{marginTop:6,display:"flex",gap:5,flexWrap:"wrap"}}><Badge label={`Score: ${sel.score}%`} color={sel.score>=75?BRAND:"#e74c3c"}/><Badge label={`Applied: ${fmt(sel.date)}`} color="#444"/></div></div></div>{sel.resumeB64&&<div style={{marginBottom:12}}>{sel.resumeB64.startsWith("data:application/pdf")?<iframe src={sel.resumeB64} style={{width:"100%",height:200,border:"1px solid #333",borderRadius:7}} title="Resume"/>:<a href={sel.resumeB64} download={sel.resume} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 12px",background:"#0d0d0d",border:"1px solid #333",borderRadius:7,color:BRAND,textDecoration:"none",fontWeight:600,fontSize:12}}>📄 {sel.resume}<span style={{marginLeft:"auto",color:"#666",fontSize:11}}>Download</span></a>}</div>}{(positions.find(p=>p.id===sel.positionId)?.questions?.[sel.level]||[]).map((q,i)=><div key={i} style={{marginBottom:6,padding:"8px 11px",background:"#0d0d0d",border:"1px solid #1e1e1e",borderRadius:7}}><div style={{fontSize:11,color:"#555",marginBottom:2}}>{q}</div><div style={{fontSize:12,color:"#ccc"}}>{sel.answers&&sel.answers[i]||"—"}</div></div>)}<div style={{borderTop:"1px solid #1e1e1e",paddingTop:12,marginTop:12,display:"flex",gap:6,flexWrap:"wrap"}}>{cardActions&&cardActions(sel,move,sea)}</div></div>}</Modal>{emailApp&&<EmailModal open={true} onClose={()=>sea(null)} applicant={emailApp} onSent={()=>{onUpdate(emailApp.id,{emailSent:true});sea(null);}}/>}</div>);
+}
+
+/* ── Hired Tab ── */
+function HiredTab({applicants,onUpdate,positions}){
+  const[sel,ssel]=useState(null);const[departTarget,sdt]=useState(null);const[emailApp,sea]=useState(null);
+  const hired=applicants.filter(a=>a.status==="hired");
+  return(<div><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:18}}><ST c={`Hired (${hired.length})`}/><Btn onClick={()=>exportCSV(hired.map(a=>({Name:a.name,Position:a.position,Email:a.email,Date:a.date})),"Hired")} variant="ghost" size="sm">↓ Export</Btn></div><div className="grid-cards" style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(255px,1fr))",gap:10}}>{hired.map(a=><Card key={a.id} glow onClick={()=>ssel(a)}><div style={{display:"flex",gap:10,alignItems:"center",marginBottom:8}}><Avatar name={a.name}/><div><div style={{fontWeight:700,color:"#eee"}}>{a.name}</div><div style={{color:"#666",fontSize:12}}>{a.position} · {a.levelLabel}</div><div style={{color:BRAND,fontSize:11,marginTop:2}}>Hired {fmt(a.date)}</div></div></div><div className="action-btns" style={{display:"flex",gap:5,flexWrap:"wrap"}}><Badge label={`Score: ${a.score}%`} color={a.score>=75?BRAND:"#e74c3c"}/>{a.salary&&<Badge label={`$${a.salary}/mo`} color="#4A90E2"/>}</div></Card>)}{hired.length===0&&<div style={{color:"#444",gridColumn:"1/-1",textAlign:"center",padding:48}}>No hired employees yet.</div>}</div><Modal open={!!sel} onClose={()=>ssel(null)} title={`Employee — ${sel?.name}`} width={640}>{sel&&<ApplicantFullDetail app={sel} positions={positions} onUpdate={d=>onUpdate(sel.id,d)} extraBtns={<><Btn onClick={()=>sea(sel)} variant="ghost" size="sm">✉ Send Email</Btn><Btn onClick={()=>{sdt(sel);ssel(null);}} variant="danger" size="sm">No Longer with Lumenor</Btn></>}/>}</Modal>{emailApp&&<EmailModal open={true} onClose={()=>sea(null)} applicant={emailApp} onSent={()=>{onUpdate(emailApp.id,{emailSent:true});sea(null);}}/>}<DepartModal open={!!departTarget} onClose={()=>sdt(null)} applicant={departTarget} onConfirm={(reason,notes)=>{if(departTarget)onUpdate(departTarget.id,{status:"departed",history:[...(departTarget.history||[]),"departed"],departReason:reason,departNotes:notes,departDate:today()});sdt(null);}}/></div>);
+}
+
+/* ── Waiting List Tab ── */
+function WaitingListTab({applicants,onUpdate,positions}){
+  const[sel,ssel]=useState(null);const[emailApp,sea]=useState(null);
+  const waiting=applicants.filter(a=>a.status==="waiting-list");
+  const groups={};waiting.forEach(a=>{const reachedFinal=(a.history||[]).includes("final-interview");const key=`${a.position}|||${reachedFinal?"Final Interview":"Initial Interview"}`;if(!groups[key])groups[key]=[];groups[key].push(a);});
+  return(<div><ST c={`Waiting List (${waiting.length})`}/>{waiting.length===0&&<div style={{color:"#444",textAlign:"center",padding:48}}>No applicants on waiting list.</div>}{Object.entries(groups).map(([key,items])=>{const[pos,stage]=key.split("|||");return(<div key={key} style={{marginBottom:22}}><div style={{fontSize:11,fontWeight:700,color:"#555",marginBottom:10,letterSpacing:.5,textTransform:"uppercase",borderBottom:"1px solid #1a1a1a",paddingBottom:5,display:"flex",gap:8,alignItems:"center"}}>{pos} <Badge label={stage} color={stage==="Final Interview"?"#9B59B6":"#00BCD4"}/></div><div className="grid-cards" style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(255px,1fr))",gap:10}}>{items.map(a=><Card key={a.id} onClick={()=>ssel(a)}><div style={{display:"flex",gap:10,alignItems:"center",marginBottom:8}}><Avatar name={a.name} size={36}/><div><div style={{fontWeight:700,color:"#eee",fontSize:13}}>{a.name}</div><div style={{color:"#666",fontSize:11}}>{a.levelLabel} · {fmt(a.date)}</div><Badge label={`Score: ${a.score}%`} color={a.score>=75?BRAND:"#e74c3c"}/></div></div><div className="action-btns" style={{display:"flex",gap:5,flexWrap:"wrap"}}><Btn sm variant="blue" onClick={e=>{e.stopPropagation();onUpdate(a.id,{status:"hired",history:[...(a.history||[]),"hired"]});}}>✓ Hire</Btn><Btn sm variant="ghost" onClick={e=>{e.stopPropagation();sea(a);}}>✉ Email</Btn></div></Card>)}</div></div>);})}<Modal open={!!sel} onClose={()=>ssel(null)} title="Waiting List — Applicant" width={580}>{sel&&<ApplicantFullDetail app={sel} positions={positions} onUpdate={null} extraBtns={<><Btn onClick={()=>{onUpdate(sel.id,{status:"hired",history:[...(sel.history||[]),"hired"]});ssel(null);}} variant="blue" size="sm">✓ Hire</Btn><Btn onClick={()=>sea(sel)} variant="ghost" size="sm">✉ Email</Btn></>}/>}</Modal>{emailApp&&<EmailModal open={true} onClose={()=>sea(null)} applicant={emailApp} onSent={()=>{onUpdate(emailApp.id,{emailSent:true});sea(null);}}/>}</div>);
+}
+
+/* ── Departed Tab ── */
+function DepartedTab({applicants,positions}){
+  const[sel,ssel]=useState(null);const departed=applicants.filter(a=>a.status==="departed");const groups={};departed.forEach(a=>{if(!groups[a.position])groups[a.position]=[];groups[a.position].push(a);});
+  return(<div><ST c={`Departed Employees (${departed.length})`}/>{departed.length===0&&<div style={{color:"#444",textAlign:"center",padding:48}}>No departed employees.</div>}{Object.entries(groups).map(([pos,items])=><div key={pos} style={{marginBottom:22}}><div style={{fontSize:11,fontWeight:700,color:"#555",marginBottom:10,letterSpacing:.5,textTransform:"uppercase",borderBottom:"1px solid #1a1a1a",paddingBottom:5}}>{pos} ({items.length})</div><div className="grid-cards" style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(255px,1fr))",gap:10}}>{items.map(a=><Card key={a.id} onClick={()=>ssel(a)}><div style={{display:"flex",gap:10,alignItems:"center",marginBottom:8}}><Avatar name={a.name} size={36}/><div style={{flex:1}}><div style={{fontWeight:700,color:"#eee",fontSize:13}}>{a.name}</div><div style={{color:"#666",fontSize:11}}>{a.position} · {a.levelLabel}</div><div style={{color:"#e74c3c",fontSize:11,marginTop:2}}>{a.departReason||"Departed"} · {fmt(a.departDate||a.date)}</div></div></div><div style={{display:"flex",gap:3,flexWrap:"wrap"}}>{(a.history||[]).map((h,i)=><Badge key={i} label={SL[h]||h} color={SC[h]||"#555"}/>)}</div></Card>)}</div></div>)}<Modal open={!!sel} onClose={()=>ssel(null)} title={`Departed — ${sel?.name}`} width={640}>{sel&&<ApplicantFullDetail app={sel} positions={positions} onUpdate={null}/>}</Modal></div>);
+}
+
+/* ── Org Chart ── */
+function OrgChartTab({org,setOrg}){
+  const[editM,seM]=useState(null);const[editD,seD]=useState({});const[addDM,saDM]=useState(false);const[addTM,saTM]=useState(null);const[addSM,saSM]=useState(false);const[newDept,sND]=useState({name:"",color:BRAND});const[newTeam,sNT]=useState({name:"",lead:""});const[newSupp,sNS]=useState({name:"",role:""});
+  function openEdit(type,data){seM(type);seD({...data});}
+  function saveEdit(){let next={...org};if(editM==="founder")next={...next,founder:{...next.founder,...editD}};else if(editM==="partner")next={...next,partner:{...next.partner,...editD}};else if(editM?.startsWith("dept-")){const id=editM.replace("dept-","");next={...next,departments:next.departments.map(d=>d.id===id?{...d,...editD}:d)};}else if(editM?.startsWith("team-")){const[dId,tId]=editM.replace("team-","").split("__");next={...next,departments:next.departments.map(d=>d.id===dId?{...d,teams:d.teams.map(t=>t.id===tId?{...t,...editD}:t)}:d)};}else if(editM?.startsWith("supp-")){const id=editM.replace("supp-","");next={...next,overallSupport:next.overallSupport.map(s=>s.id===id?{...s,...editD}:s)};}setOrg(next);seM(null);}
+  const BOX={borderRadius:12,padding:"12px 18px",textAlign:"center",minWidth:130};
+  return(<div><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:22}}><ST c="Organizational Chart"/><Btn onClick={()=>saDM(true)} variant="outline" size="sm">+ Add Department</Btn></div><div style={{overflowX:"auto",paddingBottom:24,WebkitOverflowScrolling:"touch"}}><div style={{minWidth:700}}><div style={{display:"flex",justifyContent:"center",gap:40,marginBottom:40}}>{["founder","partner"].map(role=><div key={role} style={{...BOX,background:`linear-gradient(135deg,${BRAND}22,${BRAND}11)`,border:`1.5px solid ${BRAND}55`,cursor:"pointer"}} onClick={()=>openEdit(role,org[role])}><Avatar name={org[role]?.name} size={44}/><div style={{color:"#eee",fontWeight:800,marginTop:8,fontSize:14}}>{org[role]?.name}</div><div style={{color:BRAND,fontSize:12,marginTop:2}}>{org[role]?.title}</div><div style={{color:"#444",fontSize:10,marginTop:4}}>✎ edit</div></div>)}</div><div style={{width:2,height:30,background:"#2a2a2a",margin:"0 auto"}}/><div style={{display:"flex",justifyContent:"center",gap:24,flexWrap:"wrap"}}>{(org.departments||[]).map(dept=><div key={dept.id} style={{display:"flex",flexDirection:"column",alignItems:"center"}}><div style={{width:2,height:30,background:"#2a2a2a"}}/><div style={{...BOX,background:`${dept.color}22`,border:`1.5px solid ${dept.color}55`,cursor:"pointer"}} onClick={()=>openEdit(`dept-${dept.id}`,{name:dept.name,color:dept.color})}><div style={{color:dept.color,fontWeight:800,fontSize:14}}>{dept.name}</div><div style={{color:"#444",fontSize:10,marginTop:2}}>✎ edit</div></div><div style={{width:2,height:20,background:"#2a2a2a"}}/><div style={{display:"flex",gap:14,position:"relative"}}><div style={{position:"absolute",top:0,left:"50%",width:"80%",height:2,background:"#2a2a2a",transform:"translateX(-50%)"}}/>{ dept.teams?.map(t=><div key={t.id} style={{display:"flex",flexDirection:"column",alignItems:"center"}}><div style={{width:2,height:20,background:"#2a2a2a"}}/><div style={{...BOX,background:"#111",border:"1px solid #2a2a2a",cursor:"pointer",minWidth:110}} onClick={()=>openEdit(`team-${dept.id}__${t.id}`,{name:t.name,lead:t.lead})}><div style={{color:"#ccc",fontWeight:700,fontSize:13}}>{t.name}</div>{t.lead&&<div style={{color:"#555",fontSize:11,marginTop:2}}>Lead: {t.lead}</div>}<div style={{color:"#333",fontSize:10,marginTop:3}}>✎ edit</div></div></div>)}<div style={{display:"flex",flexDirection:"column",alignItems:"center"}}><div style={{width:2,height:20,background:"#2a2a2a"}}/><button onClick={()=>saTM(dept.id)} style={{background:"none",border:`1px dashed ${dept.color}55`,borderRadius:10,padding:"7px 12px",cursor:"pointer",color:dept.color,fontSize:11,minWidth:90}}>+ Team</button></div></div><div style={{width:2,height:12}}/><button onClick={()=>setOrg({...org,departments:org.departments.filter(d=>d.id!==dept.id)})} style={{background:"none",border:"none",color:"#333",cursor:"pointer",fontSize:10}}>✕ remove</button></div>)}</div><div style={{marginTop:36,borderTop:"1px solid #1e1e1e",paddingTop:24}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}><div style={{color:"#555",fontSize:12,fontWeight:700,letterSpacing:.5}}>OVERALL SUPPORT</div><Btn onClick={()=>saSM(true)} variant="ghost" size="sm">+ Add</Btn></div><div style={{display:"flex",flexWrap:"wrap",gap:10}}>{(org.overallSupport||[]).map(s=><div key={s.id} style={{display:"flex",gap:10,alignItems:"center",padding:"8px 13px",background:"#111",border:"1px solid #222",borderRadius:10,cursor:"pointer"}} onClick={()=>openEdit(`supp-${s.id}`,{name:s.name,role:s.role})}><Avatar name={s.name} size={30}/><div><div style={{color:"#ccc",fontWeight:600,fontSize:13}}>{s.name}</div><div style={{color:"#555",fontSize:11}}>{s.role}</div></div><button onClick={e=>{e.stopPropagation();setOrg({...org,overallSupport:org.overallSupport.filter(x=>x.id!==s.id)});}} style={{background:"none",border:"none",color:"#333",cursor:"pointer",fontSize:13,marginLeft:4}}>✕</button></div>)}</div></div></div></div><Modal open={!!editM} onClose={()=>seM(null)} title="Edit">{(editM==="founder"||editM==="partner")&&<><Inp label="Name" value={editD.name||""} onChange={v=>seD(d=>({...d,name:v}))}/><Inp label="Title" value={editD.title||""} onChange={v=>seD(d=>({...d,title:v}))}/></>}{editM?.startsWith("dept-")&&<><Inp label="Department Name" value={editD.name||""} onChange={v=>seD(d=>({...d,name:v}))}/><Inp label="Color (hex)" value={editD.color||""} onChange={v=>seD(d=>({...d,color:v}))}/></>}{editM?.startsWith("team-")&&<><Inp label="Team Name" value={editD.name||""} onChange={v=>seD(d=>({...d,name:v}))}/><Inp label="Team Lead" value={editD.lead||""} onChange={v=>seD(d=>({...d,lead:v}))}/></>}{editM?.startsWith("supp-")&&<><Inp label="Name" value={editD.name||""} onChange={v=>seD(d=>({...d,name:v}))}/><Inp label="Role" value={editD.role||""} onChange={v=>seD(d=>({...d,role:v}))}/></>}<div style={{display:"flex",gap:8,marginTop:10}}><Btn onClick={saveEdit}>Save</Btn><Btn onClick={()=>seM(null)} variant="ghost">Cancel</Btn></div></Modal><Modal open={addDM} onClose={()=>saDM(false)} title="Add Department"><Inp label="Department Name" value={newDept.name} onChange={v=>sND(d=>({...d,name:v}))}/><Inp label="Color (hex)" value={newDept.color} onChange={v=>sND(d=>({...d,color:v}))}/><Btn onClick={()=>{if(!newDept.name.trim())return;setOrg({...org,departments:[...(org.departments||[]),{...newDept,id:uid(),teams:[]}]});saDM(false);sND({name:"",color:BRAND});}}>Add Department</Btn></Modal><Modal open={!!addTM} onClose={()=>saTM(null)} title="Add Team"><Inp label="Team Name" value={newTeam.name} onChange={v=>sNT(t=>({...t,name:v}))}/><Inp label="Team Lead" value={newTeam.lead} onChange={v=>sNT(t=>({...t,lead:v}))}/><Btn onClick={()=>{if(!newTeam.name.trim())return;setOrg({...org,departments:org.departments.map(d=>d.id===addTM?{...d,teams:[...(d.teams||[]),{...newTeam,id:uid()}]}:d)});saTM(null);sNT({name:"",lead:""});}}>Add Team</Btn></Modal><Modal open={addSM} onClose={()=>saSM(false)} title="Add Support"><Inp label="Name" value={newSupp.name} onChange={v=>sNS(s=>({...s,name:v}))}/><Inp label="Role" value={newSupp.role} onChange={v=>sNS(s=>({...s,role:v}))}/><Btn onClick={()=>{if(!newSupp.name.trim())return;setOrg({...org,overallSupport:[...(org.overallSupport||[]),{...newSupp,id:uid()}]});saSM(false);sNS({name:"",role:""});}}>Add</Btn></Modal></div>);
+}
+
+/* ── Managers ── */
+function ManagersTab({managers,setManagers,employees,setEmployees}){
+  const[selMgr,sselMgr]=useState(null);const[addMM,saddMM]=useState(false);const[addEM,saddEM]=useState(false);const[editEM,seditEM]=useState(null);const[newMgr,snewMgr]=useState({name:"",role:"",location:"Philippines"});const[newEmp,snewEmp]=useState({name:"",position:"",location:"Philippines"});const[editED,seditED]=useState({name:"",position:""});
+  const mgr=managers.find(m=>m.id===selMgr);const mgrEmps=employees.filter(e=>e.managerId===selMgr);
+  return(<div><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}><ST c={selMgr?mgr?.name:"Managers"}/>{!selMgr&&<Btn onClick={()=>saddMM(true)} size="sm">+ Add Manager</Btn>}{selMgr&&<div style={{display:"flex",gap:8}}><Btn onClick={()=>saddEM(true)} size="sm">+ Add Employee</Btn><Btn onClick={()=>sselMgr(null)} variant="ghost" size="sm">← Back</Btn></div>}</div>{!selMgr?<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:12}}>{managers.map(m=><Card key={m.id} onClick={()=>sselMgr(m.id)}><Avatar name={m.name} size={44}/><div style={{marginTop:10}}><div style={{fontWeight:700,color:"#eee"}}>{m.name}</div><div style={{color:"#666",fontSize:12}}>{m.role}</div><div style={{marginTop:5,display:"flex",gap:6,alignItems:"center"}}><Badge label={m.location} color="#4A90E2"/><span style={{color:"#444",fontSize:11}}>{employees.filter(e=>e.managerId===m.id).length} members</span></div></div></Card>)}</div>:<div><div style={{display:"flex",gap:12,alignItems:"center",marginBottom:20}}><Avatar name={mgr?.name} size={48}/><div><div style={{color:"#eee",fontWeight:700,fontSize:16}}>{mgr?.name}</div><div style={{color:"#666",fontSize:12}}>{mgr?.role} · {mgr?.location}</div></div><Btn onClick={()=>{setManagers(managers.filter(m=>m.id!==selMgr));sselMgr(null);}} variant="danger" size="sm" style={{marginLeft:"auto"}}>Remove Manager</Btn></div><div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(240px,1fr))",gap:10}}>{mgrEmps.map(e=><Card key={e.id}><div style={{display:"flex",gap:9,alignItems:"center",marginBottom:9}}><Avatar name={e.name} size={34}/><div><div style={{fontWeight:700,color:"#eee",fontSize:13}}>{e.name}</div><div style={{color:"#666",fontSize:11}}>{e.position} · {e.location}</div></div></div><div style={{display:"flex",gap:6}}><Btn onClick={()=>{seditEM(e.id);seditED({name:e.name,position:e.position});}} variant="outline" size="sm">Edit</Btn><Btn onClick={()=>setEmployees(employees.filter(x=>x.id!==e.id))} variant="danger" size="sm">Remove</Btn></div></Card>)}{mgrEmps.length===0&&<div style={{color:"#444",fontSize:12,gridColumn:"1/-1"}}>No employees assigned yet.</div>}</div></div>}<Modal open={addMM} onClose={()=>saddMM(false)} title="Add Manager"><Inp label="Full Name" value={newMgr.name} onChange={v=>snewMgr(m=>({...m,name:v}))} required/><Inp label="Role / Title" value={newMgr.role} onChange={v=>snewMgr(m=>({...m,role:v}))}/><LocSelect val={newMgr.location} onChange={v=>snewMgr(m=>({...m,location:v}))}/><div style={{display:"flex",gap:8}}><Btn onClick={()=>{if(!newMgr.name.trim())return;setManagers([...managers,{...newMgr,id:uid()}]);snewMgr({name:"",role:"",location:"Philippines"});saddMM(false);}}>Add Manager</Btn><Btn onClick={()=>saddMM(false)} variant="ghost">Cancel</Btn></div></Modal><Modal open={addEM} onClose={()=>saddEM(false)} title={`Add Employee under ${mgr?.name}`}><Inp label="Full Name" value={newEmp.name} onChange={v=>snewEmp(e=>({...e,name:v}))} required/><Inp label="Position / Role" value={newEmp.position} onChange={v=>snewEmp(e=>({...e,position:v}))}/><LocSelect val={newEmp.location} onChange={v=>snewEmp(e=>({...e,location:v}))}/><div style={{display:"flex",gap:8}}><Btn onClick={()=>{if(!newEmp.name.trim())return;setEmployees([...employees,{...newEmp,id:uid(),managerId:selMgr,salary:0,notes:"",contract:""}]);snewEmp({name:"",position:"",location:"Philippines"});saddEM(false);}}>Add Employee</Btn><Btn onClick={()=>saddEM(false)} variant="ghost">Cancel</Btn></div></Modal><Modal open={!!editEM} onClose={()=>seditEM(null)} title="Edit Employee"><Inp label="Full Name" value={editED.name} onChange={v=>seditED(d=>({...d,name:v}))}/><Inp label="Position" value={editED.position} onChange={v=>seditED(d=>({...d,position:v}))}/><div style={{display:"flex",gap:8}}><Btn onClick={()=>{setEmployees(employees.map(e=>e.id===editEM?{...e,...editED}:e));seditEM(null);}}>Save</Btn><Btn onClick={()=>seditEM(null)} variant="ghost">Cancel</Btn></div></Modal></div>);
+}
+
+/* ── Job Questionnaire ── */
+function JobQuestionnaireTab({positions,setPositions}){
+  const[selPos,ssp]=useState(positions[0]?.id||null);const[selLvl,ssl]=useState("entry");const[editingTitle,set]=useState(false);const[titleVal,stv]=useState("");const[delConfirm,sdc]=useState(false);
+  const pos=positions.find(p=>p.id===selPos);const qs=pos?.questions?.[selLvl]||[];
+  function updateQ(idx,val){setPositions(positions.map(p=>p.id===selPos?{...p,questions:{...p.questions,[selLvl]:p.questions[selLvl].map((q,i)=>i===idx?val:q)}}:p));}
+  function addQ(){setPositions(positions.map(p=>p.id===selPos?{...p,questions:{...p.questions,[selLvl]:[...(p.questions[selLvl]||[]),"New question?"]}}:p));}
+  function removeQ(idx){setPositions(positions.map(p=>p.id===selPos?{...p,questions:{...p.questions,[selLvl]:p.questions[selLvl].filter((_,i)=>i!==idx)}}:p));}
+  function saveTitle(){if(!titleVal.trim())return;setPositions(positions.map(p=>p.id===selPos?{...p,label:titleVal}:p));set(false);}
+  function deletePosition(){const next=positions.filter(p=>p.id!==selPos);setPositions(next);ssp(next[0]?.id||null);sdc(false);}
+  return(<div><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}><ST c="Job Questionnaire"/><Btn onClick={()=>{const id=uid();const np={id,label:"New Position",questions:{entry:["Describe your background."],mid:["Describe your experience."],senior:["Describe your leadership experience."]}};setPositions([...positions,np]);ssp(id);}} variant="outline" size="sm">+ Add Position</Btn></div><div style={{display:"flex",gap:18}}><div style={{width:180,flexShrink:0}}><div style={{fontSize:10,fontWeight:700,color:"#555",letterSpacing:.5,marginBottom:9,textTransform:"uppercase"}}>Positions</div>{positions.map(p=><div key={p.id} onClick={()=>{ssp(p.id);sdc(false);set(false);}} style={{padding:"9px 12px",borderRadius:7,marginBottom:5,cursor:"pointer",background:selPos===p.id?`${BRAND}22`:"#111",borderLeft:selPos===p.id?`3px solid ${BRAND}`:"3px solid transparent",color:selPos===p.id?"#eee":"#777",fontWeight:selPos===p.id?700:400,fontSize:13}}>{p.label}</div>)}</div>{pos&&<div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16}}>{editingTitle?<><input value={titleVal} onChange={e=>stv(e.target.value)} autoFocus style={{flex:1,padding:"7px 11px",border:`1.5px solid ${BRAND}`,borderRadius:7,fontSize:15,fontWeight:700,background:"#0d0d0d",color:"#eee",outline:"none"}}/><Btn onClick={saveTitle} size="sm">Save</Btn><Btn onClick={()=>set(false)} variant="ghost" size="sm">Cancel</Btn></>:<><div style={{flex:1,fontSize:16,fontWeight:800,color:"#eee"}}>{pos.label}</div><Btn onClick={()=>{stv(pos.label);set(true);}} variant="outline" size="sm">✎ Rename</Btn><Btn onClick={()=>sdc(true)} variant="danger" size="sm">🗑 Delete</Btn></>}</div>{delConfirm&&<div style={{background:"#1a0a0a",border:"1px solid #e74c3c55",borderRadius:9,padding:"12px 14px",marginBottom:13,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}><span style={{color:"#e74c3c",fontSize:12,flex:1}}>Delete <b>{pos.label}</b>? Cannot be undone.</span><Btn onClick={deletePosition} variant="danger" size="sm">Yes, Delete</Btn><Btn onClick={()=>sdc(false)} variant="ghost" size="sm">Cancel</Btn></div>}<div style={{display:"flex",gap:7,marginBottom:16}}>{LEVELS.map(l=><button key={l.id} onClick={()=>ssl(l.id)} style={{padding:"7px 13px",borderRadius:7,border:selLvl===l.id?`1.5px solid ${BRAND}`:"1.5px solid #2a2a2a",background:selLvl===l.id?`${BRAND}22`:"#111",color:selLvl===l.id?BRAND:"#666",fontWeight:700,cursor:"pointer",fontSize:12}}>{l.label}</button>)}</div><div style={{marginBottom:10,padding:"6px 11px",background:"#0d0d0d",borderRadius:7,fontSize:11,color:"#555"}}>{LEVELS.find(l=>l.id===selLvl)?.sub}</div>{qs.map((q,i)=><div key={i} style={{display:"flex",gap:7,marginBottom:8,alignItems:"flex-start"}}><span style={{color:"#444",marginTop:9,fontWeight:700,minWidth:18,fontSize:12}}>{i+1}.</span><input value={q} onChange={e=>updateQ(i,e.target.value)} style={{flex:1,padding:"8px 11px",border:"1.5px solid #2a2a2a",borderRadius:7,fontSize:13,outline:"none",background:"#0d0d0d",color:"#eee"}} onFocus={e=>e.target.style.borderColor=BRAND} onBlur={e=>e.target.style.borderColor="#2a2a2a"}/><Btn onClick={()=>removeQ(i)} variant="danger" size="sm">✕</Btn></div>)}<div style={{marginTop:12}}><Btn onClick={addQ} variant="outline" size="sm">+ Add Question</Btn></div></div>}</div></div>);
+}
+
+/* ─────────────────────────────────────────
+   ADMIN DASHBOARD — with cloud sync
+───────────────────────────────────────── */
+const TABS=[
+  {id:"dashboard",label:"Dashboard",icon:"◈"},
+  {id:"passed",label:"Passed",icon:"✓"},
+  {id:"initial",label:"Initial Interview",icon:"💬"},
+  {id:"final",label:"Final Interview",icon:"★"},
+  {id:"hired",label:"Hired",icon:"♦"},
+  {id:"waiting",label:"Waiting List",icon:"⏳"},
+  {id:"failed",label:"Failed",icon:"✗"},
+  {id:"departed",label:"Departed",icon:"🚪"},
+  {id:"org",label:"Org Chart",icon:"◎"},
+  {id:"managers",label:"Managers",icon:"◉"},
+  {id:"questionnaire",label:"Job Questionnaire",icon:"❓"},
+];
+
+function AdminDashboard({onLogout}){
+  const[tab,setTab]=useState("dashboard");
+  const[collapsed,setCollapsed]=useState(false);
+  const[mobileNavOpen,setMobileNavOpen]=useState(false);
+  const isMobile=()=>window.innerWidth<=768;
+  const[syncStatus,setSyncStatus]=useState("loading"); // loading | synced | saving | error | offline
+  const[applicants,setApplicants]=useState([]);
+  const[employees,setEmployees]=useState([]);
+  const[managers,setManagers]=useState([]);
+  const[org,setOrg]=useState(DEFAULT_ORG);
+  const[positions,setPositions]=useState(DEFAULT_POSITIONS);
+  const[initialized,setInitialized]=useState(false);
+  const saveTimer=useRef(null);
+  const lastRemoteHash=useRef("");
+  const isConfigured=true; // credentials are set
+  const[manualRefresh,setManualRefresh]=useState(0);
+
+  // Hash state for change detection — full JSON so any field change is detected
+  function hashState(s){try{return JSON.stringify(s);}catch{return "";}}
+
+  // ── Initial load — ALWAYS prefer cloud over localStorage ──
+  useEffect(()=>{
+    async function init(){
+      setSyncStatus("loading");
+      // Always try cloud first — localStorage is only fallback
+      let cloudData=null;
+      let data=null;
+      if(isConfigured){cloudData=await cloudRead();}
+      if(cloudData){
+        data=cloudData;
+        // Also update localStorage to match cloud
+        lsWrite(cloudData);
+      } else {
+        data=lsRead();
+      }
+      if(!data){data=DEFAULT_STATE;}
+      setApplicants(data.applicants||DEFAULT_STATE.applicants);
+      setEmployees(data.employees||DEFAULT_STATE.employees);
+      setManagers(data.managers||DEFAULT_STATE.managers);
+      setOrg(data.org||DEFAULT_ORG);
+      setPositions(data.positions||DEFAULT_POSITIONS);
+      lastRemoteHash.current=hashState(data);
+      setSyncStatus(cloudData?"synced":"offline");
+      setInitialized(true);
+    }
+    init();
+  },[]);
+
+  // ── Auto-save whenever state changes (debounced 1.5s) ──
+  useEffect(()=>{
+    if(!initialized)return;
+    const data={applicants,employees,managers,org,positions};
+    lsWrite(data); // always save locally immediately
+    if(!isConfigured){setSyncStatus("offline");return;}
+    if(saveTimer.current)clearTimeout(saveTimer.current);
+    setSyncStatus("saving");
+    saveTimer.current=setTimeout(async()=>{
+      const ok=await cloudWrite(data);
+      setSyncStatus(ok?"synced":"error");
+      if(ok)lastRemoteHash.current=hashState(data);
+    },1500);
+  },[applicants,employees,managers,org,positions,initialized]);
+
+  // ── Shared function to apply remote data ──
+  const applyRemote=useCallback(async(silent=true)=>{
+    if(!isConfigured)return false;
+    if(!silent)setSyncStatus("loading");
+    const remote=await cloudRead();
+    if(!remote){if(!silent)setSyncStatus("error");return false;}
+    const remoteHash=hashState(remote);
+    // Always apply if hash differs OR if silent=false (manual refresh)
+    if(remoteHash!==lastRemoteHash.current||!silent){
+      lastRemoteHash.current=remoteHash;
+      setApplicants(remote.applicants||[]);
+      setEmployees(remote.employees||[]);
+      setManagers(remote.managers||[]);
+      setOrg(remote.org||DEFAULT_ORG);
+      setPositions(remote.positions||DEFAULT_POSITIONS);
+      lsWrite(remote);
+    }
+    if(!silent)setSyncStatus("synced");
+    return true;
+  },[]);
+
+  // ── Poll for remote changes every POLL_MS ──
+  // Also track applicant count to force-detect new submissions
+  const lastAppCount=useRef(0);
+  useEffect(()=>{
+    if(!isConfigured||!initialized)return;
+    const interval=setInterval(async()=>{
+      const remote=await cloudRead();
+      if(!remote)return;
+      const newCount=remote.applicants?.length||0;
+      const remoteHash=hashState(remote);
+      // Update if hash changed OR applicant count changed
+      if(remoteHash!==lastRemoteHash.current||newCount!==lastAppCount.current){
+        console.log("🔄 Sync update - applicants:",newCount);
+        lastRemoteHash.current=remoteHash;
+        lastAppCount.current=newCount;
+        setApplicants(remote.applicants||[]);
+        setEmployees(remote.employees||[]);
+        setManagers(remote.managers||[]);
+        setOrg(remote.org||DEFAULT_ORG);
+        setPositions(remote.positions||DEFAULT_POSITIONS);
+        lsWrite(remote);
+      }
+    },POLL_MS);
+    return()=>clearInterval(interval);
+  },[initialized,applyRemote]);
+
+  // ── Manual refresh trigger ──
+  useEffect(()=>{
+    if(!initialized||manualRefresh===0)return;
+    applyRemote(false);
+  },[manualRefresh,initialized,applyRemote]);
+
+  function upApp(id,data){setApplicants(prev=>prev.map(a=>a.id===id?{...a,...data}:a));}
+
+  const waiting=applicants.filter(a=>a.status==="waiting-list").length;
+  const failed=applicants.filter(a=>a.status==="failed").length;
+  const W=collapsed?54:218;
+
+  const syncLabel={loading:"Loading...",saving:"Saving...",synced:"✓ Synced",error:"⚠ Sync Error — Is bin PUBLIC?",offline:"Local Only"}[syncStatus];
+  const syncColor={loading:"#f39c12",saving:"#f39c12",synced:BRAND,error:"#e74c3c",offline:"#888"}[syncStatus];
+
+  function passedActions(a,move){return <><Btn onClick={()=>move(a,"initial-interview")} variant="outline" size="sm">→ Initial Interview</Btn><Btn onClick={()=>move(a,"failed",{failStage:"initial"})} variant="danger" size="sm">Mark Failed</Btn></>;}
+  function initialActions(a,move,sea){return <><Btn onClick={()=>move(a,"final-interview")} variant="purple" size="sm">→ Final Interview</Btn><Btn onClick={()=>move(a,"failed",{failStage:"initial"})} variant="danger" size="sm">Mark Failed</Btn><Btn onClick={()=>sea(a)} variant="ghost" size="sm">✉ Email</Btn></>;}
+  function finalActions(a,move,sea){return <><Btn onClick={()=>move(a,"hired")} variant="blue" size="sm">Hired ✓</Btn><Btn onClick={()=>move(a,"waiting-list")} variant="warn" size="sm">Waiting List</Btn><Btn onClick={()=>move(a,"failed",{failStage:"final"})} variant="danger" size="sm">Not Hired</Btn><Btn onClick={()=>sea(a)} variant="ghost" size="sm">✉ Email</Btn></>;}
+
+  if(syncStatus==="loading")return(<div style={{minHeight:"100vh",background:"#080808",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16}}><img src={LOGO} alt="Lumenor" style={{height:52,filter:`drop-shadow(0 0 16px ${BRAND}44)`}}/><div style={{color:BRAND,fontSize:14,fontWeight:600}}>Loading HR System...</div><div style={{width:40,height:3,background:`linear-gradient(90deg,${BRAND},transparent)`,borderRadius:2,animation:"none"}}></div></div>);
+
+  return(<div className="admin-layout" style={{display:"flex",minHeight:"100vh",background:"#080808"}}>
+    {/* Mobile Header */}
+    <div className="mobile-header" style={{position:"fixed",top:0,left:0,right:0,zIndex:200,background:"#0d0d0d",borderBottom:"1px solid #1a1a1a",padding:"10px 14px",display:"none",alignItems:"center",justifyContent:"space-between",height:52}}>
+      <img src={LOGO} alt="Lumenor" style={{height:24}}/>
+      <div style={{display:"flex",alignItems:"center",gap:10}}>
+        <div style={{fontSize:9,color:syncColor,fontWeight:700}}>{syncLabel}</div>
+        <div onClick={()=>setMobileNavOpen(o=>!o)} style={{cursor:"pointer",color:"#aaa",fontSize:20,lineHeight:1}}>☰</div>
+      </div>
+    </div>
+    {/* Mobile Slide-over Nav */}
+    {mobileNavOpen&&<div style={{position:"fixed",inset:0,zIndex:300,background:"rgba(0,0,0,.7)"}} onClick={()=>setMobileNavOpen(false)}>
+      <div onClick={e=>e.stopPropagation()} style={{position:"absolute",left:0,top:0,bottom:0,width:240,background:"#0d0d0d",borderRight:"1px solid #1a1a1a",display:"flex",flexDirection:"column",overflowY:"auto"}}>
+        <div style={{padding:"14px 16px",borderBottom:"1px solid #1a1a1a",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <div style={{display:"flex",alignItems:"center",gap:9}}><img src={LOGO} alt="Lumenor" style={{height:28}}/><div style={{color:"#eee",fontWeight:800,fontSize:12}}>Lumenor<br/><span style={{color:"#444",fontSize:9,fontWeight:400}}>HR System</span></div></div>
+          <div onClick={()=>setMobileNavOpen(false)} style={{color:"#555",cursor:"pointer",fontSize:18}}>✕</div>
+        </div>
+        <div style={{flex:1,padding:"8px 0"}}>
+          {TABS.map(t=>{const active=tab===t.id;const badge=t.id==="waiting"?waiting:t.id==="failed"?failed:0;return(<div key={t.id} onClick={()=>{setTab(t.id);setMobileNavOpen(false);}} style={{padding:"10px 16px",cursor:"pointer",display:"flex",alignItems:"center",gap:10,color:active?"#eee":"#555",background:active?`${BRAND}18`:"transparent",borderLeft:active?`3px solid ${BRAND}`:"3px solid transparent"}}><span style={{fontSize:14}}>{t.icon}</span><span style={{fontSize:13,fontWeight:active?700:500}}>{t.label}</span>{badge>0&&<span style={{marginLeft:"auto",background:t.id==="waiting"?"#f39c12":"#e74c3c",color:t.id==="waiting"?"#000":"#fff",fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:8}}>{badge}</span>}</div>);})}
+        </div>
+        <div style={{padding:"8px 0",borderTop:"1px solid #1a1a1a"}}>
+          <div style={{margin:"3px 12px 7px",padding:"5px 9px",borderRadius:6,background:"#111",border:`1px solid ${syncColor}44`,fontSize:10,color:syncColor,fontWeight:700,textAlign:"center"}}>{syncLabel}</div>
+          <div onClick={()=>{setManualRefresh(n=>n+1);setMobileNavOpen(false);}} style={{margin:"0 12px 7px",padding:"5px 9px",borderRadius:6,background:"#0d1a0d",border:`1px solid ${BRAND}33`,fontSize:10,color:BRAND,fontWeight:700,textAlign:"center",cursor:"pointer"}}>⟳ Refresh Now</div>
+          <div onClick={onLogout} style={{padding:"10px 16px",cursor:"pointer",color:"#e74c3c",fontSize:12,display:"flex",alignItems:"center",gap:7}}>⊗ Logout</div>
+        </div>
+      </div>
+    </div>}
+    {/* Sidebar — desktop only */}
+    <div className="sidebar-desktop" style={{width:W,flexShrink:0,background:"#0d0d0d",borderRight:"1px solid #1a1a1a",transition:"width .25s",display:"flex",flexDirection:"column",overflow:"hidden"}}>
+      <div style={{padding:collapsed?"15px 10px":"14px 14px",borderBottom:"1px solid #1a1a1a",display:"flex",alignItems:"center",gap:9,justifyContent:collapsed?"center":"flex-start"}}>
+        <img src={LOGO} alt="Lumenor" style={{height:collapsed?26:32,flexShrink:0,transition:"height .2s"}}/>
+        {!collapsed&&<div style={{color:"#eee",fontWeight:800,fontSize:12,whiteSpace:"nowrap"}}>Lumenor<br/><span style={{color:"#444",fontSize:9,fontWeight:400}}>HR System</span></div>}
+      </div>
+      <div style={{flex:1,padding:"8px 0",overflowY:"auto"}}>
+        {TABS.map(t=>{const active=tab===t.id;const badge=t.id==="waiting"?waiting:t.id==="failed"?failed:0;return(<div key={t.id} onClick={()=>setTab(t.id)} style={{padding:collapsed?"8px 0":"8px 13px",cursor:"pointer",display:"flex",alignItems:"center",gap:9,justifyContent:collapsed?"center":"flex-start",color:active?"#eee":"#555",background:active?`${BRAND}18`:"transparent",borderLeft:active?`3px solid ${BRAND}`:"3px solid transparent",transition:"all .15s"}}><span style={{fontSize:13,flexShrink:0,filter:active?`drop-shadow(0 0 5px ${BRAND})`:"none"}}>{t.icon}</span>{!collapsed&&<span style={{fontSize:12,fontWeight:active?700:500,whiteSpace:"nowrap"}}>{t.label}</span>}{!collapsed&&badge>0&&<span style={{marginLeft:"auto",background:t.id==="waiting"?"#f39c12":"#e74c3c",color:t.id==="waiting"?"#000":"#fff",fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:8}}>{badge}</span>}</div>);})}
+      </div>
+      <div style={{padding:"8px 0",borderTop:"1px solid #1a1a1a"}}>
+        {!collapsed&&<div style={{margin:"3px 9px 7px",padding:"5px 9px",borderRadius:6,background:"#111",border:`1px solid ${syncColor}44`,fontSize:10,color:syncColor,fontWeight:700,textAlign:"center",transition:"all .4s"}}>{syncLabel}</div>}
+        {!collapsed&&<div onClick={()=>setManualRefresh(n=>n+1)} style={{margin:"0 9px 7px",padding:"5px 9px",borderRadius:6,background:"#0d1a0d",border:`1px solid ${BRAND}33`,fontSize:10,color:BRAND,fontWeight:700,textAlign:"center",cursor:"pointer",transition:"all .2s"}} title="Pull latest data from cloud">⟳ Refresh Now</div>}
+        {!collapsed&&!isConfigured&&<div style={{margin:"0 9px 7px",padding:"5px 9px",borderRadius:6,background:"#1a1200",border:"1px solid #f39c1244",fontSize:9,color:"#f39c12",textAlign:"center",lineHeight:1.5}}>Setup cloud sync below</div>}
+        <div onClick={()=>setCollapsed(c=>!c)} style={{padding:collapsed?"8px 0":"8px 13px",cursor:"pointer",color:"#444",fontSize:11,display:"flex",alignItems:"center",gap:7,justifyContent:collapsed?"center":"flex-start"}}>{collapsed?"▶":"◀"}{!collapsed&&" Collapse"}</div>
+        <div onClick={onLogout} style={{padding:collapsed?"8px 0":"8px 13px",cursor:"pointer",color:"#444",fontSize:11,display:"flex",alignItems:"center",gap:7,justifyContent:collapsed?"center":"flex-start"}}>⊗{!collapsed&&" Logout"}</div>
+      </div>
+    </div>
+    {/* Main */}
+    <div className="main-content tab-content" style={{flex:1,padding:24,overflowY:"auto",minWidth:0}}>
+      <style>{`@media(max-width:768px){.tab-content{padding-top:68px!important;}}`}</style>
+      {tab==="dashboard"&&<DashboardTab applicants={applicants}/>}
+      {tab==="passed"&&<AppListTab applicants={applicants} onUpdate={upApp} positions={positions} filterStatus="passed" label="Passed Applicants" cardActions={passedActions}/>}
+      {tab==="initial"&&<AppListTab applicants={applicants} onUpdate={upApp} positions={positions} filterStatus="initial-interview" label="Initial Interview" cardActions={initialActions}/>}
+      {tab==="final"&&<AppListTab applicants={applicants} onUpdate={upApp} positions={positions} filterStatus="final-interview" label="Final Interview" cardActions={finalActions}/>}
+      {tab==="hired"&&<HiredTab applicants={applicants} onUpdate={upApp} positions={positions}/>}
+      {tab==="waiting"&&<WaitingListTab applicants={applicants} onUpdate={upApp} positions={positions}/>}
+      {tab==="failed"&&<AppListTab applicants={applicants} onUpdate={upApp} positions={positions} filterStatus="failed" label="Failed Applicants" cardActions={()=>null}/>}
+      {tab==="departed"&&<DepartedTab applicants={applicants} positions={positions}/>}
+      {tab==="org"&&<OrgChartTab org={org} setOrg={setOrg}/>}
+      {tab==="managers"&&<ManagersTab managers={managers} setManagers={setManagers} employees={employees} setEmployees={setEmployees}/>}
+      {tab==="questionnaire"&&<JobQuestionnaireTab positions={positions} setPositions={setPositions}/>}
+    </div>
+  </div>);
+}
+
+/* ── Root ── */
+function App(){
+  const[mode,setMode]=useState("home");
+  const[positions,setPositions]=useState(DEFAULT_POSITIONS);
+  const isConfigured=true; // credentials are set
+
+  // Load positions from cloud in background on mount (non-blocking)
+  useEffect(()=>{
+    async function loadPositions(){
+      let data=null;
+      if(isConfigured)data=await cloudRead();
+      if(!data)data=lsRead();
+      if(data?.positions)setPositions(data.positions);
+    }
+    loadPositions();
+  },[]);
+
+  function goApply(){
+    setMode("apply"); // instant — positions already loading in background
+  }
+  async function handleApply(appData){
+    console.log("📝 Saving applicant:",appData.name);
+    let saved=false;
+    // Retry up to 5 times with increasing delay
+    for(let attempt=1;attempt<=5;attempt++){
+      try{
+        // Read current data
+        let data=await cloudRead();
+        if(!data){
+          console.warn("cloudRead failed attempt",attempt,"- using localStorage");
+          data=lsRead();
+        }
+        if(!data)data={applicants:[],employees:[],managers:[],org:DEFAULT_ORG,positions:DEFAULT_POSITIONS};
+        // Add new applicant
+        const existing=(data.applicants||[]).filter(a=>a.id!==appData.id);
+        data.applicants=[...existing,appData];
+        // Write back
+        const ok=await cloudWrite(data);
+        if(ok){
+          lsWrite(data);
+          console.log("✅ Saved on attempt",attempt,"- total applicants:",data.applicants.length);
+          saved=true;
+          break;
+        } else {
+          console.warn("cloudWrite failed attempt",attempt);
+        }
+      }catch(e){
+        console.error("Save attempt",attempt,"error:",e.message);
+      }
+      // Wait before retry (1s, 2s, 3s, 4s, 5s)
+      await new Promise(r=>setTimeout(r,attempt*1000));
+    }
+    if(!saved)console.error("❌ Failed to save after 5 attempts");
+  }
+  if(mode==="apply")return <ApplicantModule positions={positions} onApply={handleApply} onBack={()=>setMode("home")}/>;
+  if(mode==="admin-login")return <AdminLogin onLogin={()=>setMode("admin")} onBack={()=>setMode("home")}/>;
+  if(mode==="admin")return <AdminDashboard onLogout={()=>setMode("home")}/>;
+  return(<div style={{minHeight:"100vh",background:"linear-gradient(135deg,#080808 0%,#0a150a 50%,#080808 100%)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:24,position:"relative",overflow:"hidden"}}>
+    <div style={{position:"absolute",width:700,height:700,borderRadius:"50%",background:`radial-gradient(circle,${BRAND}14 0%,transparent 65%)`,top:"50%",left:"50%",transform:"translate(-50%,-50%)",pointerEvents:"none"}}/>
+    <div style={{position:"absolute",top:22,right:24}}><Btn onClick={()=>setMode("admin-login")} variant="ghost" size="sm">Admin Dashboard →</Btn></div>
+    <div style={{textAlign:"center",maxWidth:520,position:"relative",padding:"0 8px"}}>
+      <img src={LOGO} alt="Lumenor Advisory Group" style={{height:88,marginBottom:28,filter:`drop-shadow(0 0 26px ${BRAND}55)`}}/>
+      <h1 className="home-title" style={{fontSize:38,fontWeight:900,color:"#eee",marginBottom:10,letterSpacing:-.7,lineHeight:1.15}}>Lumenor Advisory Group</h1>
+      <p className="home-subtitle" style={{color:BRAND,fontSize:17,fontWeight:600,marginBottom:42,textShadow:`0 0 18px ${BRAND}88`}}>Your Direct Path to a Better Career. Apply Now.</p>
+      <Btn onClick={goApply} style={{fontSize:16,padding:"15px 48px",borderRadius:13,boxShadow:`0 0 28px ${BRAND}55,0 0 56px ${BRAND}22`}} className="apply-btn">Apply Now →</Btn>
+    </div>
+  </div>);
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
